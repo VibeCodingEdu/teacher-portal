@@ -147,3 +147,51 @@ textarea.input {
 }
 @media (prefers-reduced-transparency: reduce) { .top { background: var(--paper); backdrop-filter: none; -webkit-backdrop-filter: none; } }
 @media (max-width: 420px) { .row2 { grid-template-columns: 1fr; } }
+
+/* year summary */
+.stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 18px 0 4px; }
+.stat { background: var(--sheet); border: 0; border-radius: 16px; box-shadow: var(--shadow); padding: 12px 8px; text-align: center; display: flex; flex-direction: column; gap: 2px; }
+.stat b { font-family: var(--display); font-size: 1.7rem; line-height: 1; color: var(--accent); }
+.stat span { font-size: .78rem; color: var(--muted); }
+.stat.warn b { color: var(--bad); }
+button.stat:active { transform: scale(.97); }
+
+/* history filters */
+.filters { display: grid; gap: 8px; margin: 0 0 14px; }
+.frow { display: grid; grid-template-columns: 48px 1fr; align-items: center; gap: 8px; }
+.flabel { font-size: .78rem; color: var(--muted); font-weight: 600; }
+.filters .chip { padding: 5px 12px; font-size: .88rem; }
+.month-sel { padding: 6px 2px; font-size: .95rem; max-width: 220px; }
+
+/* slips: sick-note badge, closed */
+.slip-badges { margin-top: 8px; }
+.badge { display: inline-flex; align-items: center; gap: 4px; font-size: .82rem; font-weight: 700; padding: 3px 10px; border-radius: 8px; }
+.badge.ok { background: color-mix(in srgb, var(--done) 14%, transparent); color: var(--done); }
+.badge.bad { background: color-mix(in srgb, var(--bad) 13%, transparent); color: var(--bad); }
+.slip.closed { opacity: .6; }
+.slip.closed .slip-date { text-decoration: line-through; text-decoration-thickness: 1px; }
+.slip-actions { flex-wrap: wrap; }
+.btn.attach { margin-inline-start: auto; }
+
+/* report form */
+.check { display: flex; gap: 10px; align-items: flex-start; background: color-mix(in srgb, var(--marker) 55%, transparent);
+  border-radius: 12px; padding: 12px; margin: 4px 0 16px; cursor: pointer; line-height: 1.45; }
+.check input { width: 20px; height: 20px; margin: 2px 0 0; accent-color: var(--accent); flex: none; }
+.check.shake { animation: shake .4s; }
+@keyframes shake { 20%, 60% { transform: translateX(-6px); } 40%, 80% { transform: translateX(6px); } }
+.warn-box { background: color-mix(in srgb, var(--todo) 13%, transparent); color: var(--ink); border-radius: 12px; padding: 10px 12px; margin: -6px 0 16px; font-size: .92rem; }
+.file-name { font-size: .85rem; color: var(--muted); }
+
+/* modal */
+.modal-back { position: fixed; inset: 0; z-index: 70; background: rgba(20, 16, 10, .38); display: grid; place-items: center; padding: 16px;
+  animation: fadeIn .18s ease-out; }
+.modal-back.out { opacity: 0; transition: opacity .18s; }
+.modal { background: var(--sheet); border-radius: 20px; box-shadow: 0 20px 60px rgba(0,0,0,.3); padding: 22px 20px 16px; width: min(400px, 100%);
+  animation: popIn .22s cubic-bezier(.2, .8, .2, 1); }
+.modal h3 { margin: 0 0 8px; font-size: 1.2rem; letter-spacing: -0.01em; }
+.modal p { margin: 0 0 18px; color: var(--ink-2); line-height: 1.55; }
+.modal-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-start; }
+.btn.danger-fill { background: var(--bad); border-color: var(--bad); color: #fff; }
+@keyframes fadeIn { from { opacity: 0; } }
+@keyframes popIn { from { transform: scale(.94); opacity: 0; } }
+@media (max-width: 420px) { .stats { gap: 6px; } .stat b { font-size: 1.4rem; } }

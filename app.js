@@ -8,7 +8,7 @@
   const $ = s => document.querySelector(s);
   const DAYS = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת"];
   const MONTHS = ["ינואר", "פברואר", "מרץ", "אפריל", "מאי", "יוני", "יולי", "אוגוסט", "ספטמבר", "אוקטובר", "נובמבר", "דצמבר"];
-  const REASONS = ["מחלה", "מחלת ילד", "אבל", "הצהרה", "בידוד", "אחר"];
+  const REASONS = ["מחלה", "מחלת ילד", "אחר"];
 
   // ── small helpers ────────────────────────────────────────────────────
   function h(tag, attrs, ...kids) {
@@ -136,6 +136,33 @@
     return btn;
   }
 
+  // ── modal ────────────────────────────────────────────────────────────
+  function modal(title, text, buttons) {
+    const back = h("div.modal-back", { role: "presentation" });
+    const close = () => {
+      back.classList.add("out"); back.style.pointerEvents = "none";
+      back.addEventListener("transitionend", () => back.remove(), { once: true });
+      setTimeout(() => back.remove(), 250);
+      document.removeEventListener("keydown", esc);
+    };
+    const esc = e => { if (e.key === "Escape") close(); };
+    const box = h("div.modal", { role: "alertdialog", "aria-modal": "true", "aria-label": title },
+      h("h3", null, title), h("p", null, text),
+      h("div.modal-actions", null, (buttons || [["הבנתי", null, "primary"]]).map(([label, fn, kind]) =>
+        h("button.btn", { type: "button", class: kind || "", on: { click: () => { close(); if (fn) fn(); } } }, label))));
+    back.append(box);
+    back.addEventListener("click", e => { if (e.target === back) close(); });
+    document.addEventListener("keydown", esc);
+    document.body.append(back);
+    box.querySelector("button").focus();
+  }
+  const LOCKED = "את ההיעדרות הזאת כבר אי אפשר לשנות או לבטל מכאן. יש לפנות למזכירות או לרכז ההיעדרויות.";
+  const LOCK_WHY = { past: "התאריך שלה כבר עבר.", subs: "כבר שובץ לה ממלא מקום.", office: "היא נרשמה במשרד." };
+  function lockedModal(x) {
+    modal("יש לפנות למזכירות", `${LOCK_WHY[x.lock] || ""} ${LOCKED}`.trim(),
+      [["הבנתי", null, "primary"], ["כתיבת בקשה למשרד", () => showFix(x), ""]]);
+  }
+
   // ── screens ──────────────────────────────────────────────────────────
   function setWho() {
     $("#who").replaceChildren(...(teacher ? [h("span", null, teacher), h("button", { on: { click: logout } }, "יציאה")] : []));
@@ -144,13 +171,13 @@
 
   function showLogin(msg = "") {
     setWho();
-    const name = h("input.input", { autocomplete: "name", placeholder: "למשל: כהן, או יוסף כהן" });
+    const name = h("input.input", { autocomplete: "name", placeholder: "שם פרטי ושם משפחה, למשל: יוסף כהן" });
     const id = h("input.input", { inputmode: "numeric", autocomplete: "off", placeholder: "9 ספרות", maxlength: "10" });
     const err = h("p.error", null, msg);
     const go = h("button.btn.primary.wide", { type: "submit" }, "כניסה");
     const form = h("form.page", { on: { submit: async e => {
       e.preventDefault(); err.textContent = "";
-      if (!name.value.trim()) { err.textContent = "כתוב את השם"; return; }
+      if (name.value.trim().split(/\s+/).length < 2) { err.textContent = "כתוב שם פרטי ושם משפחה"; return; }
       if (!idValid(id.value)) { err.textContent = "מספר הזהות לא תקין. בדוק את הספרות"; return; }
       go.disabled = true; go.textContent = "בודק…";
       try {
@@ -159,7 +186,7 @@
         showHome();
       } catch (ex) { err.textContent = ex.message; go.disabled = false; go.textContent = "כניסה"; }
     } } },
-      h("div.field", null, h("label.label", null, "השם שלך"), name),
+      h("div.field", null, h("label.label", null, "שם פרטי ושם משפחה"), name),
       h("div.field", null, h("label.label", null, "מספר זהות"), id, h("div.hint", null, "משמש רק לזיהוי. לא נשמר בדף.")),
       go, err);
     $("#main").replaceChildren(
@@ -177,58 +204,169 @@
     "השינוי לא אושר": ["השינוי לא אושר", "bad"], "הביטול לא אושר": ["הביטול לא אושר", "bad"],
   };
   const statusOf = s => STATUS[s] || (String(s).startsWith("לבדיקה") ? ["בבדיקה במשרד", "wait"] : [s || "", "muted"]);
-  const isClosed = s => ["בוטל", "בוטל בשוטף", "בוטל במערכת", "ביטול"].includes(s);
+  const isClosed = x => x.lock === "canceled" || ["בוטל", "בוטל בשוטף", "בוטל במערכת", "ביטול"].includes(x.status);
+  const SICK = ["מחלה", "מחלת ילד"];
+
+  /** School days (Sunday–Friday) of an absence. */
+  function daysOf(x) { let n = 0, d = x.from; while (d <= (x.to || x.from)) { if (parseISO(d).getDay() !== 6) n++; d = addDays(d, 1); } return n; }
+
+  let mine = [];  // the last list from the sheet, also used to warn about overlaps
+  const filt = { month: "", reason: "", source: "", missing: false };
 
   async function showHome() {
     setWho();
-    const list = h("div.slips", null, loading("טוען את ההיעדרויות שלך…"));
+    const body = h("div", null, loading("טוען את ההיעדרויות שלך…"));
     $("#main").replaceChildren(
-      h("h1", null, "שלום, ", h("span.accent", null, (teacher || "").split(" ").slice(-1)[0] || teacher)),
-      h("p.lead", null, "ההיעדרויות שלך מהיום והלאה"),
+      h("h1", null, "שלום, ", h("span.accent", null, teacher || "")),
+      h("p.lead", null, "ההיעדרויות שלך מתחילת שנת הלימודים"),
       h("button.btn.primary.wide", { on: { click: () => showForm() } }, "+ דיווח היעדרות"),
-      h("h2", null, "ההיעדרויות שלי"), list);
-    try {
-      const r = await call("mine");
-      const items = r.items.filter(x => x.status !== "עבר, לא טופל")
-        .sort((a, b) => a.from.localeCompare(b.from) || a.fromHour - b.fromHour);
-      if (!items.length) { list.replaceChildren(h("div.empty", null, "אין היעדרויות רשומות. 🌿")); return; }
-      list.replaceChildren(...items.map(slip));
-      if (r.synced) list.after(h("div.synced", null, `המצב במערכת עודכן לאחרונה: ${r.synced}`));
-    } catch (ex) { list.replaceChildren(h("div.empty", null, ex.message)); }
+      body);
+    let r;
+    try { r = await call("mine"); } catch (ex) { body.replaceChildren(h("div.empty", null, ex.message)); return; }
+    if (r.teacher && r.teacher !== teacher) { teacher = r.teacher; store.set("tp_teacher", teacher); setWho(); $("#main h1 .accent").textContent = teacher; }
+    mine = r.items || [];
+    const today = r.today || todayISO();
+    const live = mine.filter(x => !isClosed(x));
+    const upcoming = live.filter(x => (x.to || x.from) >= today).sort((a, b) => a.from.localeCompare(b.from) || a.fromHour - b.fromHour);
+    const past = mine.filter(x => (x.to || x.from) < today || isClosed(x));
+
+    // year summary
+    const done = live.filter(x => x.from <= today);
+    const sumDays = done.reduce((a, x) => a + daysOf({ from: x.from, to: (x.to || x.from) < today ? x.to : today }), 0);
+    const full = done.filter(x => x.fromHour === 1 && x.toHour === 10).length;
+    const noNote = live.filter(x => x.sick && !x.hasNote && x.from <= today);
+    const stats = h("div.stats", null,
+      h("div.stat", null, h("b", null, sumDays), h("span", null, "ימי היעדרות השנה")),
+      h("div.stat", null, h("b", null, done.length - full), h("span", null, "מהם חלקי יום")),
+      h("button.stat", { type: "button", class: noNote.length ? "warn" : "", on: { click: () => {
+        filt.missing = !!noNote.length; filt.month = filt.reason = filt.source = ""; paintHistory(); hist.scrollIntoView({ behavior: "smooth" });
+      } } }, h("b", null, noNote.length), h("span", null, "בלי אישור מחלה")));
+
+    // history filters
+    const months = [...new Set(past.map(x => x.from.slice(0, 7)))].sort().reverse();
+    const reasons = [...new Set(mine.map(x => x.reason).filter(Boolean))];
+    const hist = h("div.slips");
+    const bar = h("div.filters");
+    function chipRow(label, opts, key) {
+      return h("div.frow", null, h("span.flabel", null, label), h("div.chips", null, opts.map(([v, t]) => h("button.chip", {
+        type: "button", class: filt[key] === v ? "on" : "", on: { click: () => { filt[key] = v; paintHistory(); } } }, t))));
+    }
+    function paintHistory() {
+      const monthSel = h("select.input.month-sel", { "aria-label": "חודש", on: { change: e => { filt.month = e.target.value; paintHistory(); } } },
+        h("option", { value: "" }, "כל החודשים"),
+        months.map(m => { const d = parseISO(m + "-01"); return h("option", { value: m, selected: filt.month === m }, `${MONTHS[d.getMonth()]} ${d.getFullYear()}`); }));
+      bar.replaceChildren(
+        h("div.frow", null, h("span.flabel", null, "חודש"), monthSel),
+        chipRow("סיבה", [["", "הכל"], ...reasons.map(x => [x, x])], "reason"),
+        chipRow("עדכן", [["", "הכל"], ["המורה", "אני"], ["המשרד", "המשרד"]], "source"),
+        h("div.frow", null, h("span.flabel", null, ""), h("button.chip", { type: "button", class: filt.missing ? "on" : "",
+          on: { click: () => { filt.missing = !filt.missing; paintHistory(); } } }, "רק בלי אישור מחלה")));
+      const rows = past.filter(x => (!filt.month || x.from.startsWith(filt.month)) && (!filt.reason || x.reason === filt.reason)
+        && (!filt.source || x.source === filt.source) && (!filt.missing || (x.sick && !x.hasNote && !isClosed(x))));
+      const shown = filt.missing ? rows.concat(upcoming.filter(x => x.sick && !x.hasNote && x.from <= today)) : rows;
+      hist.replaceChildren(...(shown.length ? shown.map(slip) : [h("div.empty", null, past.length ? "אין היעדרויות שמתאימות לסינון" : "אין עדיין היעדרויות קודמות השנה")]));
+    }
+    paintHistory();
+    body.replaceChildren(
+      stats,
+      h("h2", null, "קרובות"),
+      upcoming.length ? h("div.slips", null, upcoming.map(slip)) : h("div.empty", null, "אין היעדרויות קרובות. 🌿"),
+      h("h2", null, "מתחילת השנה"), bar, hist,
+      r.synced ? h("div.synced", null, `המצב במערכת עודכן לאחרונה: ${r.synced}`) : null,
+      matchMedia("(display-mode: standalone)").matches ? null
+        : h("div.synced", null, "טיפ: אפשר להוסיף את הדף למסך הבית בטלפון (שיתוף ← הוספה למסך הבית), ולפתוח אותו כמו אפליקציה."));
   }
 
   function slip(x) {
     const range = x.to && x.to !== x.from;
     const d1 = parseISO(x.from), hp = heb(d1);
     const [label, tone] = x.kind === "office" ? ["נרשם במערכת", "ok"] : statusOf(x.status);
+    const closed = isClosed(x);
     const actions = [];
-    const started = x.from <= todayISO();
-    if (x.kind === "report" && !isClosed(x.status) && x.status !== "ממתין לאישור המשרד") {
-      if (!started) actions.push(h("button.btn", { on: { click: () => showForm(x) } }, "שינוי"));
-      actions.push(h("button.btn.danger", { on: { click: () => cancel(x) } }, "ביטול"));
+    if (!closed) {
+      if (x.kind === "report") {
+        actions.push(h("button.btn", { on: { click: () => x.lock ? lockedModal(x) : showForm(x) } }, "שינוי"));
+        actions.push(h("button.btn.danger", { on: { click: () => x.lock ? lockedModal(x) : cancel(x) } }, "ביטול"));
+      } else {
+        actions.push(h("button.btn", { on: { click: () => showFix(x) } }, "בקשת תיקון"));
+      }
+      if (x.sick || x.hasNote) actions.push(h("button.btn.attach", { on: { click: () => pickNote(x) } }, x.hasNote ? "צירוף אישור נוסף" : "צירוף אישור מחלה"));
     }
-    if (x.kind === "office") actions.push(h("button.btn", { on: { click: () => showFix(x) } }, "בקשת תיקון"));
-    return h("div.slip", null,
+    // "missing" only once the absence has started; a future one just offers the button
+    const note = closed ? null : x.hasNote ? h("span.badge.ok", null, "✓ אישור מחלה צורף")
+      : x.sick && x.from <= todayISO() ? h("span.badge.bad", null, "חסר אישור מחלה") : null;
+    return h("div.slip", { class: closed ? "closed" : "" },
       h("div.slip-top", null,
         h("div.slip-date", null, `${dayName(x.from)}, `, h("span.num", null, d1.getDate()), ` ב${MONTHS[d1.getMonth()]}`,
           range ? ` – ${dayName(x.to)} ${dm(x.to)}` : ""),
         h("span.tag", { class: tone }, label),
-        h("span.src", null, x.kind === "office" ? "נרשם במשרד" : "דיווחת")),
+        h("span.src", null, x.source === "המשרד" || x.kind === "office" ? "עודכן במשרד" : "עדכנת")),
       h("div.slip-meta", null, hp ? h("span", null, `${hp.day} ב${hp.month}`) : null,
         h("span", null, hoursText(x.fromHour, x.toHour)), h("span", null, x.reason)),
       x.note ? h("div.slip-note", null, x.note) : null,
+      note ? h("div.slip-badges", null, note) : null,
       actions.length ? h("div.slip-actions", null, actions) : null);
   }
+
+  // ── sick note: a photo or a PDF ──────────────────────────────────────
+  const MAX_MB = 8;
+  async function shrink(file) {
+    // Photos from a phone are large: send a 1800px JPEG. PDFs (and images the
+    // browser cannot draw, e.g. HEIC outside Safari) go as they are.
+    if (!/^image\//.test(file.type)) return file;
+    try {
+      const url = URL.createObjectURL(file);
+      const img = await new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = bad; i.src = url; });
+      const k = Math.min(1, 1800 / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      const blob = await new Promise(ok => c.toBlob(ok, "image/jpeg", 0.82));
+      return blob && blob.size < file.size ? new File([blob], "note.jpg", { type: "image/jpeg" }) : file;
+    } catch (e) { return file; }
+  }
+  const b64 = f => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = bad; r.readAsDataURL(f); });
+  async function uploadNote(x, file) {
+    const f = await shrink(file);
+    if (f.size > MAX_MB * 1024 * 1024) throw new Error(`הקובץ גדול מדי (עד ${MAX_MB}MB)`);
+    const mime = f.type || (/\.pdf$/i.test(file.name) ? "application/pdf" : "image/jpeg");
+    await call("note", { row: x.kind === "report" ? x.row : "", absenceId: x.absenceId || "", mime, data: await b64(f) });
+  }
+  function noteInput(onFile) {
+    const inp = h("input", { type: "file", accept: "image/*,application/pdf", class: "hidden" });
+    inp.addEventListener("change", () => { if (inp.files[0]) onFile(inp.files[0]); inp.value = ""; });
+    return inp;
+  }
+  function pickNote(x) {
+    const inp = noteInput(async file => {
+      toast("מעלה את האישור…");
+      try { await uploadNote(x, file); toast("✓ האישור צורף"); showHome(); }
+      catch (ex) { toast(ex.message, true); }
+    });
+    document.body.append(inp); inp.click(); setTimeout(() => inp.remove(), 60000);
+  }
+
+  // ── report / change ──────────────────────────────────────────────────
+  const overlaps = (a, b) => a.from <= (b.to || b.from) && b.from <= (a.to || a.from) && !(a.toHour < b.fromHour || a.fromHour > b.toHour);
 
   function showForm(edit = null) {
     let from = edit ? edit.from : nextSchoolDay(todayISO()), to = edit ? edit.to : from;
     let fh = edit ? edit.fromHour : 1, th = edit ? edit.toHour : 10, full = fh === 1 && th === 10;
-    let reason = edit ? edit.reason : "מחלה";
+    let reason = edit && REASONS.includes(edit.reason) ? edit.reason : edit ? "אחר" : "מחלה";
     let anchor = null;  // first tap of a range, waiting for the second
-    const toPick = datePicker(to, d => { to = d; }, from);
-    const fromPick = datePicker(from, d => { from = d; if (to < d) { to = d; toPick.setValue(d); } });
+    let file = null;
+    const warn = h("div.warn-box.hidden");
+    const checkOverlap = () => {
+      const want = { from, to, fromHour: full ? 1 : fh, toHour: full ? 10 : th };
+      const hit = mine.find(x => !isClosed(x) && !(edit && x.kind === "report" && x.row === edit.row) && overlaps(want, x));
+      warn.classList.toggle("hidden", !hit);
+      if (hit) warn.textContent = `שים לב: כבר רשומה לך היעדרות ביום ${dayName(hit.from)} ${dm(hit.from)} (${hoursText(hit.fromHour, hit.toHour)}). אין צורך לדווח שוב.`;
+    };
+    const toPick = datePicker(to, d => { to = d; checkOverlap(); }, from);
+    const fromPick = datePicker(from, d => { from = d; if (to < d) { to = d; toPick.setValue(d); } checkOverlap(); });
     const hours = h("div.chips.hours");
-    const paintHours = () => hours.replaceChildren(...Array.from({ length: 10 }, (_, i) => {
+    const paintHours = () => { hours.replaceChildren(...Array.from({ length: 10 }, (_, i) => {
       const n = i + 1, inRange = n >= fh && n <= th;
       return h("button.chip", { type: "button", class: (n === fh || n === th) ? "on" : inRange ? "in" : "",
         "aria-pressed": inRange ? "true" : "false",
@@ -238,7 +376,7 @@
           else { fh = Math.min(anchor, n); th = Math.max(anchor, n); anchor = null; }
           paintHours();
         } } }, n);
-    }));
+    })); checkOverlap(); };
     const hoursField = h("div.field", null, h("span.label", null, "אילו שעות? לחץ על השעה הראשונה ואז על האחרונה"), hours);
     const scope = h("div.chips");
     const paintScope = () => {
@@ -248,40 +386,64 @@
       hoursField.classList.toggle("hidden", full); paintHours();
     };
     const reasons = h("div.chips");
-    const paintReasons = () => reasons.replaceChildren(...REASONS.map(r => h("button.chip", { type: "button", class: r === reason ? "on" : "",
-      on: { click: () => { reason = r; paintReasons(); } } }, r)));
+    const paintReasons = () => {
+      reasons.replaceChildren(...REASONS.map(r => h("button.chip", { type: "button", class: r === reason ? "on" : "",
+        on: { click: () => { reason = r; paintReasons(); } } }, r)));
+      noteField.classList.toggle("hidden", !SICK.includes(reason));
+    };
+    const details = h("textarea.input", { placeholder: "לא חובה. בלי פרטים רפואיים.", maxlength: "300", value: edit ? edit.note || "" : "" });
+    const fileName = h("span.file-name", null, "לא חובה. אפשר לצרף גם אחר כך");
+    const fileInp = noteInput(f => { file = f; fileName.textContent = "📎 " + (f.name || "אישור"); });
+    const noteField = h("div.field", null, h("span.label", null, "אישור מחלה"),
+      h("div.row", null, h("button.btn", { type: "button", on: { click: () => fileInp.click() } }, "צירוף צילום או PDF"), fileName), fileInp);
+    const mgr = h("input", { type: "checkbox", id: "mgr" });
+    const mgrField = h("label.check", { for: "mgr" }, mgr, h("span", null, h("b", null, "באישור המנהל: "), "דיברתי עם המנהל והוא אישר את ההיעדרות"));
     paintScope(); paintReasons();
-    const note = h("textarea.input", { placeholder: "לא חובה. בלי פרטים רפואיים.", maxlength: "300", value: edit ? edit.note || "" : "" });
     const err = h("p.error");
+    const sendLabel = edit ? "שליחת השינוי" : "שליחת הדיווח";
     const send = h("button.btn.primary.wide", { type: "button", on: { click: async () => {
       err.textContent = "";
       if (to < from) { err.textContent = "\"עד תאריך\" מוקדם מ\"מתאריך\""; return; }
+      if (!mgr.checked) { err.textContent = "לפני השליחה צריך לדבר עם המנהל ולסמן ✓"; mgrField.classList.add("shake"); setTimeout(() => mgrField.classList.remove("shake"), 500); return; }
       send.disabled = true; send.textContent = "שולח…";
-      const body = { from, to, fromHour: full ? 1 : fh, toHour: full ? 10 : th, reason, note: note.value };
+      const body = { from, to, fromHour: full ? 1 : fh, toHour: full ? 10 : th, reason, note: details.value, managerOk: true };
       try {
-        await call(edit ? "change" : "report", edit ? { ...body, row: edit.row } : body);
+        const res = await call(edit ? "change" : "report", edit ? { ...body, row: edit.row } : body);
+        if (file && SICK.includes(reason)) {
+          send.textContent = "מעלה את האישור…";
+          try { await uploadNote({ kind: "report", row: edit ? edit.row : res.row, absenceId: edit ? edit.absenceId : "" }, file); }
+          catch (ex) { toast("הדיווח נשלח, אבל האישור לא עלה: " + ex.message, true); showHome(); return; }
+        }
         toast(edit ? "✓ השינוי נשלח" : "✓ הדיווח נשלח. תודה");
         showHome();
-      } catch (ex) { err.textContent = ex.message; send.disabled = false; send.textContent = edit ? "שליחת השינוי" : "שליחת הדיווח"; }
-    } } }, edit ? "שליחת השינוי" : "שליחת הדיווח");
+      } catch (ex) {
+        if (/לפנות למזכירות/.test(ex.message)) lockedModal({ ...(edit || {}), lock: "" });
+        err.textContent = ex.message; send.disabled = false; send.textContent = sendLabel;
+      }
+    } } }, sendLabel);
     $("#main").replaceChildren(
       h("h1", null, edit ? "שינוי " : "דיווח ", h("span.accent", null, "היעדרות")),
       h("p.lead", null, edit ? "עדכן את הפרטים ושלח. המשרד יקבל הודעה." : "הדיווח מגיע למשרד מיד, ונרשם במערכת תוך כמה דקות."),
       h("div.page", null,
         h("div.row2", null, h("div.field", null, h("span.label", null, "מתאריך"), fromPick), h("div.field", null, h("span.label", null, "עד תאריך"), toPick)),
         h("div.field", null, h("span.label", null, "היקף"), scope),
-        hoursField,
+        hoursField, warn,
         h("div.field", null, h("span.label", null, "סיבה"), reasons),
-        h("div.field", null, h("label.label", null, "הערה"), note),
+        h("div.field", null, h("label.label", null, "פרטים"), details),
+        noteField,
+        mgrField,
         send, err,
         h("div.row", { style: "justify-content:center;margin-top:8px" }, h("button.btn.link", { type: "button", on: { click: showHome } }, "חזרה"))));
   }
 
   async function cancel(x) {
     const when = `${dayName(x.from)} ${dm(x.from)}`;
-    if (!confirm(`לבטל את הדיווח על ${when}?`)) return;
-    try { await call("cancel", { row: x.row }); toast("✓ הביטול נשלח"); showHome(); }
-    catch (ex) { toast(ex.message, true); }
+    modal("ביטול הדיווח", `לבטל את הדיווח על ${when}?`, [
+      ["כן, לבטל", async () => {
+        try { await call("cancel", { row: x.row }); toast("✓ הביטול נשלח"); showHome(); }
+        catch (ex) { if (/לפנות למזכירות/.test(ex.message)) lockedModal({ ...x, lock: "" }); else toast(ex.message, true); }
+      }, "primary danger-fill"],
+      ["לא", null, ""]]);
   }
 
   function showFix(x) {
@@ -294,22 +456,27 @@
       catch (ex) { err.textContent = ex.message; send.disabled = false; }
     } } }, "שליחת הבקשה");
     $("#main").replaceChildren(
-      h("h1", null, "בקשת ", h("span.accent", null, "תיקון")),
-      h("p.lead", null, `היעדרות ביום ${dayName(x.from)} ${dm(x.from)}, ${hoursText(x.fromHour, x.toHour)}. ההיעדרות נרשמה במשרד, ולכן התיקון נעשה שם.`),
-      h("div.page", null, h("div.field", null, h("label.label", null, "מה לא נכון?"), text), send, err,
+      h("h1", null, "בקשה ", h("span.accent", null, "למשרד")),
+      h("p.lead", null, `היעדרות ביום ${dayName(x.from)} ${dm(x.from)}, ${hoursText(x.fromHour, x.toHour)}. הבקשה תגיע למזכירות ולרכז ההיעדרויות.`),
+      h("div.page", null, h("div.field", null, h("label.label", null, "מה צריך לשנות?"), text), send, err,
         h("div.row", { style: "justify-content:center;margin-top:8px" }, h("button.btn.link", { type: "button", on: { click: showHome } }, "חזרה"))));
   }
 
   // ── demo data (?demo=1) ──────────────────────────────────────────────
+  const T = todayISO();
   const demoItems = [
-    { kind: "report", row: 7, from: nextSchoolDay(addDays(todayISO(), 1)), to: nextSchoolDay(addDays(todayISO(), 1)), fromHour: 1, toHour: 10, reason: "מחלה", note: "", status: "הוזן בשוטף", absenceId: "1" },
-    { kind: "report", row: 9, from: nextSchoolDay(addDays(todayISO(), 6)), to: nextSchoolDay(addDays(todayISO(), 7)), fromHour: 3, toHour: 10, reason: "אחר", note: "השתלמות", status: "חדש", absenceId: "" },
-    { kind: "office", from: nextSchoolDay(addDays(todayISO(), 3)), to: nextSchoolDay(addDays(todayISO(), 3)), fromHour: 5, toHour: 6, reason: "הצהרה", absenceId: "3" },
+    { kind: "report", row: 7, from: nextSchoolDay(addDays(T, 1)), to: nextSchoolDay(addDays(T, 1)), fromHour: 1, toHour: 10, reason: "מחלה", note: "", status: "הוזן בשוטף", absenceId: "1", source: "המורה", sick: true, hasNote: false, lock: "" },
+    { kind: "report", row: 9, from: nextSchoolDay(addDays(T, 6)), to: nextSchoolDay(addDays(T, 7)), fromHour: 3, toHour: 10, reason: "אחר", note: "השתלמות", status: "חדש", absenceId: "", source: "המורה", sick: false, hasNote: false, lock: "" },
+    { kind: "office", from: nextSchoolDay(addDays(T, 3)), to: nextSchoolDay(addDays(T, 3)), fromHour: 5, toHour: 6, reason: "אחר", absenceId: "3", source: "המשרד", sick: false, hasNote: false, lock: "office" },
+    { kind: "report", row: 4, from: addDays(T, -12), to: addDays(T, -12), fromHour: 1, toHour: 10, reason: "מחלה", status: "הוזן בשוטף", absenceId: "5", source: "המורה", sick: true, hasNote: true, lock: "past" },
+    { kind: "report", row: 3, from: addDays(T, -30), to: addDays(T, -29), fromHour: 1, toHour: 10, reason: "מחלת ילד", status: "הוזן בשוטף", absenceId: "6", source: "המורה", sick: true, hasNote: false, lock: "past" },
+    { kind: "office", from: addDays(T, -45), to: addDays(T, -45), fromHour: 4, toHour: 8, reason: "מחלה", absenceId: "7", source: "המשרד", sick: true, hasNote: false, lock: "office" },
   ];
   async function demo(action, body) {
     await new Promise(r => setTimeout(r, 350));
-    if (action === "login") return { ok: true, token: "demo", teacher: "ישראלי ישראל" };
-    if (action === "mine") return { ok: true, items: demoItems, synced: "04/11/2026 19:40" };
+    if (action === "login") return { ok: true, token: "demo", teacher: "ישראל ישראלי" };
+    if (action === "mine") return { ok: true, teacher: "ישראל ישראלי", items: demoItems, synced: "15/11/2026 19:40", today: T };
+    if (action === "report") return { ok: true, row: 99 };
     return { ok: true };
   }
 
