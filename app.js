@@ -251,6 +251,14 @@
   const statusOf = s => STATUS[s] || (String(s).startsWith("לבדיקה") ? ["בבדיקה במשרד", "wait"] : [s || "", "muted"]);
   const isClosed = x => x.lock === "canceled" || ["בוטל", "בוטל בשוטף", "בוטל במערכת", "ביטול"].includes(x.status);
   const SICK = ["מחלה", "מחלת ילד"];
+  // Sick notes are collected month by month: on the 8th the previous month is
+  // closed, so its missing notes are no longer shown or asked for.
+  function noteCutoff() {
+    const d = new Date(), y = d.getFullYear(), m = d.getMonth();
+    return d.getDate() >= 8 ? iso(new Date(y, m, 1)) : iso(new Date(y, m - 1, 1));
+  }
+  const canAttach = x => x.sick && !x.hasNote && !isClosed(x) && x.from >= noteCutoff();
+  const needsNote = x => canAttach(x) && x.from <= todayISO();
 
   /** School days (Sunday–Friday) of an absence. */
   function daysOf(x) { let n = 0, d = x.from; while (d <= (x.to || x.from)) { if (parseISO(d).getDay() !== 6) n++; d = addDays(d, 1); } return n; }
@@ -282,7 +290,7 @@
     const done = live.filter(x => x.from <= today);
     const sumDays = done.reduce((a, x) => a + daysOf({ from: x.from, to: (x.to || x.from) < today ? x.to : today }), 0);
     const full = done.filter(x => x.fromHour === 1 && x.toHour === 10).length;
-    const noNote = live.filter(x => x.sick && !x.hasNote && x.from <= today);
+    const noNote = live.filter(needsNote);
     const stats = h("div.stats", null,
       h("div.stat", null, h("b", null, sumDays), h("span", null, "ימי היעדרות השנה")),
       h("div.stat", null, h("b", null, done.length - full), h("span", null, "מהם חלקי יום")),
@@ -310,8 +318,8 @@
         h("div.frow", null, h("span.flabel", null, ""), h("button.chip", { type: "button", class: filt.missing ? "on" : "",
           on: { click: () => { filt.missing = !filt.missing; paintHistory(); } } }, "רק בלי אישור מחלה")));
       const rows = past.filter(x => (!filt.month || x.from.startsWith(filt.month)) && (!filt.reason || x.reason === filt.reason)
-        && (!filt.source || x.source === filt.source) && (!filt.missing || (x.sick && !x.hasNote && !isClosed(x))));
-      const shown = filt.missing ? rows.concat(upcoming.filter(x => x.sick && !x.hasNote && x.from <= today)) : rows;
+        && (!filt.source || x.source === filt.source) && (!filt.missing || needsNote(x)));
+      const shown = filt.missing ? rows.concat(upcoming.filter(needsNote)) : rows;
       hist.replaceChildren(...(shown.length ? shown.map(slip) : [h("div.empty", null, past.length ? "אין היעדרויות שמתאימות לסינון" : "אין עדיין היעדרויות קודמות השנה")]));
     }
     paintHistory();
@@ -371,7 +379,7 @@
       } else {
         actions.push(h("button.btn", { on: { click: () => showFix(x) } }, "בקשת תיקון"));
       }
-      if (x.sick && !x.hasNote) actions.push(h("button.btn.attach", { on: { click: () => showAttach(x) } }, "צירוף אישור מחלה"));
+      if (canAttach(x)) actions.push(h("button.btn.attach", { on: { click: () => showAttach(x) } }, "צירוף אישור מחלה"));
     }
     // the note: download any time; replace if it was the wrong file
     const notes = x.notes || [];
@@ -379,7 +387,7 @@
       notes.map((n, i) => h("button.linkbtn", { on: { click: () => downloadNote(n) } }, notes.length > 1 ? `הורדה ${i + 1}` : "הורדה")),
       closed ? null : h("button.linkbtn", { on: { click: () => replaceNote(x) } }, "החלפת הקובץ"),
       closed ? null : h("button.linkbtn", { on: { click: () => pickNote(x) } }, "צירוף קובץ נוסף"))
-      : !closed && x.sick && x.from <= todayISO() ? h("div.slip-badges", null, h("span.badge.bad", null, "חסר אישור מחלה")) : null;
+      : needsNote(x) ? h("div.slip-badges", null, h("span.badge.bad", null, "חסר אישור מחלה")) : null;
     const myFix = fixes.find(f => f.date === x.from && f.status !== "טופל");
     return h("div.slip", { class: closed ? "closed" : "" },
       h("div.slip-top", null,
@@ -461,7 +469,7 @@
   function showAttach(x) {
     onHome = false;
     const today = todayISO();
-    const others = mine.filter(y => y !== x && y.sick && !y.hasNote && !isClosed(y) && y.from <= addDays(today, 7))
+    const others = mine.filter(y => y !== x && canAttach(y) && y.from <= addDays(today, 7))
       .sort((a, b) => a.from.localeCompare(b.from));
     const picked = new Set([x]);
     const row = y => {
