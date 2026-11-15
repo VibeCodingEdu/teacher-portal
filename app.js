@@ -163,6 +163,50 @@
       [["הבנתי", null, "primary"], ["כתיבת בקשה למשרד", () => showFix(x), ""]]);
   }
 
+  // ── saving in the background ─────────────────────────────────────────
+  // The sheet takes a few seconds. The teacher moves on at once; the save runs
+  // here, a small pill says "saving, do not close", and closing the page while
+  // something is still saving asks first.
+  let busy = 0, onHome = false, saverT;
+  const saver = h("div.saver.hidden", { role: "status", "aria-live": "polite" });
+  document.body.append(saver);
+  function pill(kind, text, ms) {
+    clearTimeout(saverT);
+    saver.className = "saver " + kind; saver.textContent = text;
+    if (ms) saverT = setTimeout(() => saver.classList.add("hidden"), ms);
+  }
+  window.addEventListener("beforeunload", e => { if (busy) { e.preventDefault(); e.returnValue = ""; } });
+  /** A status line on the next screen: wait / ok / bad (+ retry). */
+  function statusLine() {
+    const el = h("div.status-line");
+    el.set = (kind, text, retry) => {
+      el.className = "status-line " + kind;
+      el.replaceChildren(...[h("span", null, text), retry ? h("button.btn.small", { type: "button", on: { click: retry } }, "לנסות שוב") : null].filter(Boolean));
+    };
+    return el;
+  }
+  /** Run work() in the background. ok/fail texts go to the line and the pill. */
+  async function background(label, work, { line, okText = "✓ נשמר. אפשר לסגור את הדף", onFail } = {}) {
+    busy++;
+    pill("wait", `⏳ ${label}… לא לסגור את הדף`);
+    if (line) line.set("wait", `${label}…`);
+    try {
+      const res = await work(line);
+      busy--;
+      if (line) line.set("ok", okText);
+      if (busy) pill("wait", "⏳ שומר… לא לסגור את הדף"); else pill("ok", okText, 4000);
+      if (onHome) showHome();
+      return res;
+    } catch (ex) {
+      busy--;
+      const msg = ex.message || "משהו השתבש";
+      if (line) line.set("bad", `לא נשמר: ${msg}`, () => background(label, work, { line, okText, onFail }));
+      pill("bad", `לא נשמר: ${msg}`, 8000);
+      if (onFail) onFail(ex);
+      if (onHome) showHome();
+    }
+  }
+
   // ── screens ──────────────────────────────────────────────────────────
   function setWho() {
     $("#who").replaceChildren(...(teacher ? [h("span", null, teacher), h("button", { on: { click: logout } }, "יציאה")] : []));
@@ -170,6 +214,7 @@
   function logout() { token = teacher = null; store.del("tp_token"); store.del("tp_teacher"); setWho(); showLogin(); }
 
   function showLogin(msg = "") {
+    onHome = false;
     setWho();
     const name = h("input.input", { autocomplete: "name", placeholder: "שם פרטי ושם משפחה, למשל: יוסף כהן" });
     const id = h("input.input", { inputmode: "numeric", autocomplete: "off", placeholder: "9 ספרות", maxlength: "10" });
@@ -215,6 +260,7 @@
   const filt = { month: "", reason: "", source: "", missing: false };
 
   async function showHome() {
+    onHome = true;
     setWho();
     const body = h("div", null, loading("טוען את ההיעדרויות שלך…"));
     $("#main").replaceChildren(
@@ -275,7 +321,11 @@
         noNote.slice().sort((a, b) => a.from.localeCompare(b.from)).slice(0, 4).map(x => dm(x.from)).join(", "),
         noNote.length > 4 ? ` ועוד ${noNote.length - 4}` : ""),
       h("button.btn.primary", { on: { click: () => showAttach(noNote[0]) } }, "לצירוף")) : null;
-    const reqs = fixes.length ? [h("h2", null, "הבקשות שלי למשרד"), h("div.fixes", null, fixes.slice(0, 8).map(fixCard))] : [];
+    const openFixes = fixes.filter(f => f.status !== "טופל").length;
+    const reqs = fixes.length ? [h("details.fixes-box", null,
+      h("summary", null, h("span", null, "הבקשות שלי למשרד"),
+        h("span.count", null, openFixes ? `${openFixes} בטיפול` : `${fixes.length}`)),
+      h("div.fixes", null, fixes.slice(0, 8).map(fixCard)))] : [];
     body.replaceChildren(
       banner,
       stats,
@@ -288,13 +338,11 @@
         : h("div.synced", null, "טיפ: אפשר להוסיף את הדף למסך הבית בטלפון (שיתוף ← הוספה למסך הבית), ולפתוח אותו כמו אפליקציה."));
   }
 
-  // Where the absence stands, in plain words: sent -> in the system -> substitutes.
+  // Where the absence stands, in plain words: sent -> in the system.
   const ENTERED = ["הוזן בשוטף", "עודכן בשוטף", "כבר היה במערכת"];
   function steps(x) {
     const inSys = x.kind === "office" || ENTERED.includes(x.status);
-    const [a, b] = String(x.subs || "").split("/").map(Number);
     const st = [["נשלח", "done"], [inSys ? "נרשם במערכת" : "ממתין לרישום במערכת", inSys ? "done" : "now"]];
-    if (inSys && b > 0) st.push([a >= b ? "כל השעות שובצו" : `שובצו מחליפים ל־${a} מתוך ${b} שעות`, a >= b ? "done" : "now"]);
     if (x.kind === "office") st.shift();
     return h("ol.steps", { "aria-label": "מצב ההיעדרות" }, st.map(([t, c]) => h("li", { class: c }, t)));
   }
@@ -330,7 +378,7 @@
     const noteRow = x.hasNote ? h("div.slip-badges", null, h("span.badge.ok", null, "✓ אישור מחלה צורף"),
       notes.map((n, i) => h("button.linkbtn", { on: { click: () => downloadNote(n) } }, notes.length > 1 ? `הורדה ${i + 1}` : "הורדה")),
       closed ? null : h("button.linkbtn", { on: { click: () => replaceNote(x) } }, "החלפת הקובץ"),
-      closed ? null : h("button.linkbtn", { on: { click: () => pickNote(x) } }, "עמוד נוסף"))
+      closed ? null : h("button.linkbtn", { on: { click: () => pickNote(x) } }, "צירוף קובץ נוסף"))
       : !closed && x.sick && x.from <= todayISO() ? h("div.slip-badges", null, h("span.badge.bad", null, "חסר אישור מחלה")) : null;
     const myFix = fixes.find(f => f.date === x.from && f.status !== "טופל");
     return h("div.slip", { class: closed ? "closed" : "" },
@@ -386,20 +434,13 @@
   }
   /** One more page for an absence that already has a note. */
   function pickNote(x) {
-    chooseFile(async file => {
-      toast("מעלה את האישור…");
-      try { await uploadNote(x, file); toast("✓ האישור צורף"); showHome(); }
-      catch (ex) { toast(ex.message, true); }
-    });
+    chooseFile(file => background("מעלה את הקובץ", () => uploadNote(x, file), { okText: "✓ הקובץ צורף. אפשר לסגור את הדף" }));
   }
   /** The wrong file was sent: the new one takes its place (the old goes to the office's trash). */
   function replaceNote(x) {
     modal("החלפת אישור המחלה", "הקובץ החדש יחליף את הקובץ שצורף להיעדרות הזאת. להמשיך?", [
-      ["בחירת קובץ חדש", () => chooseFile(async file => {
-        toast("מעלה את הקובץ החדש…");
-        try { await uploadNote(x, file, { replace: true }); toast("✓ האישור הוחלף"); showHome(); }
-        catch (ex) { toast(ex.message, true); }
-      }), "primary"],
+      ["בחירת קובץ חדש", () => chooseFile(file => background("מחליף את הקובץ",
+        () => uploadNote(x, file, { replace: true }), { okText: "✓ האישור הוחלף. אפשר לסגור את הדף" })), "primary"],
       ["ביטול", null, ""]]);
   }
   /** The note comes through the sheet's script; the teacher never gets a Drive link. */
@@ -418,6 +459,7 @@
   }
   /** Attach a sick note: to this absence, and to any other sick absences it covers. */
   function showAttach(x) {
+    onHome = false;
     const today = todayISO();
     const others = mine.filter(y => y !== x && y.sick && !y.hasNote && !isClosed(y) && y.from <= addDays(today, 7))
       .sort((a, b) => a.from.localeCompare(b.from));
@@ -437,9 +479,9 @@
       err.textContent = "";
       if (!file) { err.textContent = "בחר קובץ"; return; }
       if (!picked.size) { err.textContent = "סמן לאיזו היעדרות האישור שייך"; return; }
-      send.disabled = true; send.textContent = "מעלה…";
-      try { await uploadNote(x, file, { items: [...picked] }); toast("✓ האישור צורף"); showHome(); }
-      catch (ex) { err.textContent = ex.message; send.disabled = false; send.textContent = "שליחת האישור"; }
+      const items = [...picked], f = file;
+      showHome();
+      background("מעלה את אישור המחלה", () => uploadNote(x, f, { items }), { okText: "✓ האישור צורף. אפשר לסגור את הדף" });
     } } }, "שליחת האישור");
     $("#main").replaceChildren(
       h("h1", null, "אישור ", h("span.accent", null, "מחלה")),
@@ -456,6 +498,7 @@
   const overlaps = (a, b) => a.from <= (b.to || b.from) && b.from <= (a.to || a.from) && !(a.toHour < b.fromHour || a.fromHour > b.toHour);
 
   function showForm(edit = null) {
+    onHome = false;
     let from = edit ? edit.from : nextSchoolDay(todayISO()), to = edit ? edit.to : from;
     let fh = edit ? edit.fromHour : 1, th = edit ? edit.toHour : 10, full = fh === 1 && th === 10;
     let reason = edit && REASONS.includes(edit.reason) ? edit.reason : edit ? "אחר" : "מחלה";
@@ -510,20 +553,23 @@
       err.textContent = "";
       if (to < from) { err.textContent = "\"עד תאריך\" מוקדם מ\"מתאריך\""; return; }
       if (!mgr.checked) { err.textContent = "לפני השליחה צריך לדבר עם המנהל ולסמן ✓"; mgrField.classList.add("shake"); setTimeout(() => mgrField.classList.remove("shake"), 500); return; }
-      send.disabled = true; send.textContent = "שולח…";
       const body = { from, to, fromHour: full ? 1 : fh, toHour: full ? 10 : th, reason, note: details.value, managerOk: true };
-      try {
-        const res = await call(edit ? "change" : "report", edit ? { ...body, row: edit.row } : body);
-        if (file && SICK.includes(reason)) {
-          send.textContent = "מעלה את האישור…";
-          try { await uploadNote({ kind: "report", row: edit ? edit.row : res.row, absenceId: edit ? edit.absenceId : "" }, file); }
-          catch (ex) { toast("הדיווח נשלח, אבל האישור לא עלה: " + ex.message, true); showHome(); return; }
+      const withFile = !!(file && SICK.includes(reason)), f = file;
+      const line = statusLine();
+      showSent({ edit: !!edit, from, to, fromHour: body.fromHour, toHour: body.toHour, reason, note: body.note, file: withFile }, line);
+      // In stages, so "try again" never sends the report twice.
+      let row = edit ? edit.row : null, sent = false;
+      background(edit ? "שומר את השינוי" : "שולח את הדיווח", async ln => {
+        if (!sent) {
+          const res = await call(edit ? "change" : "report", edit ? { ...body, row: edit.row } : body);
+          sent = true; if (!edit) row = res.row;
         }
-        showSent({ edit: !!edit, from, to, fromHour: body.fromHour, toHour: body.toHour, reason, note: body.note, file: !!(file && SICK.includes(reason)) });
-      } catch (ex) {
-        if (/לפנות למזכירות/.test(ex.message)) lockedModal({ ...(edit || {}), lock: "" });
-        err.textContent = ex.message; send.disabled = false; send.textContent = sendLabel;
-      }
+        if (withFile) {
+          ln.set("wait", "מעלה את אישור המחלה…");
+          await uploadNote({ kind: "report", row, absenceId: edit ? edit.absenceId : "" }, f);
+        }
+      }, { line, okText: edit ? "✓ השינוי נשמר. אפשר לסגור את הדף" : "✓ הדיווח נשמר. אפשר לסגור את הדף",
+           onFail: ex => { if (/לפנות למזכירות/.test(ex.message)) lockedModal({ ...(edit || {}), lock: "" }); } });
     } } }, sendLabel);
     $("#main").replaceChildren(
       h("h1", null, edit ? "שינוי " : "דיווח ", h("span.accent", null, "היעדרות")),
@@ -541,7 +587,8 @@
   }
 
   /** What was sent, and what happens next. */
-  function showSent(r) {
+  function showSent(r, line) {
+    onHome = false;
     const when = r.to && r.to !== r.from ? `${dayName(r.from)} ${dm(r.from)} עד ${dayName(r.to)} ${dm(r.to)}` : `${dayName(r.from)} ${dm(r.from)}`;
     $("#main").replaceChildren(
       h("div.sent-mark", { "aria-hidden": "true" }, "✓"),
@@ -552,7 +599,8 @@
         h("div.sum-row", null, h("span", null, "סיבה"), h("b", null, r.reason)),
         r.note ? h("div.sum-row", null, h("span", null, "פרטים"), h("b", null, r.note)) : null,
         SICK.includes(r.reason) ? h("div.sum-row", null, h("span", null, "אישור מחלה"), h("b", null, r.file ? "צורף ✓" : "אפשר לצרף אחר כך")) : null,
-        h("p.next", null, "הדיווח הגיע למשרד, ויירשם במערכת תוך כמה דקות. את המצב שלו תראה בדף שלך."),
+        line || null,
+        h("p.next", null, "הדיווח מגיע למשרד מיד, ונרשם במערכת תוך כמה דקות. את המצב שלו תראה בדף שלך."),
         h("div.remind", null, h("b", null, "לא לשכוח: "), "לעדכן את המנהל, ואת רכז ההיעדרויות והמזכירות."),
         h("button.btn.primary.wide", { type: "button", on: { click: showHome } }, "לדף שלי")));
     window.scrollTo(0, 0);
@@ -562,29 +610,35 @@
     const when = `${dayName(x.from)} ${dm(x.from)}`;
     modal("ביטול הדיווח", `לבטל את הדיווח על ${when}?`, [
       ["כן, לבטל", async () => {
-        try { await call("cancel", { row: x.row }); toast("✓ הביטול נשלח"); showHome(); }
-        catch (ex) { if (/לפנות למזכירות/.test(ex.message)) lockedModal({ ...x, lock: "" }); else toast(ex.message, true); }
+        background("מבטל את הדיווח", () => call("cancel", { row: x.row }), { okText: "✓ הביטול נשלח. אפשר לסגור את הדף",
+          onFail: ex => { if (/לפנות למזכירות/.test(ex.message)) lockedModal({ ...x, lock: "" }); } });
       }, "primary danger-fill"],
       ["לא", null, ""]]);
   }
 
   function showFix(x) {
+    onHome = false;
     const text = h("textarea.input", { placeholder: "למשל: הייתי רק עד שעה 4, או: לא נעדרתי ביום הזה", maxlength: "500" });
     const err = h("p.error");
     const send = h("button.btn.primary.wide", { type: "button", on: { click: async () => {
       if (!text.value.trim()) { err.textContent = "כתוב מה צריך לתקן"; return; }
-      send.disabled = true;
-      try {
-        const r = await call("fix", { absenceId: x.absenceId, date: x.from, text: text.value });
-        const f = r.fix || { at: "", date: x.from, text: text.value, status: "חדש" };
-        $("#main").replaceChildren(
-          h("div.sent-mark", { "aria-hidden": "true" }, "✓"),
-          h("h1", null, "הבקשה ", h("span.accent", null, "נשלחה")),
-          h("div.page", null, fixCard(f),
-            h("p.next", null, "הבקשה הגיעה לרכז ההיעדרויות והיא בטיפול. כשיטפלו בה, הסטטוס כאן יתעדכן ל\"טופלה\", ואם תהיה תשובה, תראה אותה כאן."),
-            h("button.btn.primary.wide", { type: "button", on: { click: showHome } }, "לדף שלי")));
-      }
-      catch (ex) { err.textContent = ex.message; send.disabled = false; }
+      const draft = { at: "", date: x.from, text: text.value.trim(), status: "", answer: "" };
+      const card = h("div", null, fixCard({ ...draft, status: "שולח…" }));
+      const line = statusLine();
+      onHome = false;
+      $("#main").replaceChildren(
+        h("div.sent-mark", { "aria-hidden": "true" }, "✓"),
+        h("h1", null, "הבקשה ", h("span.accent", null, "נשלחה")),
+        h("div.page", null, card, line,
+          h("p.next", null, "הבקשה מגיעה לרכז ההיעדרויות. כשיטפלו בה, הסטטוס כאן יתעדכן ל\"טופלה\", ואם תהיה תשובה, תראה אותה כאן."),
+          h("button.btn.primary.wide", { type: "button", on: { click: showHome } }, "לדף שלי")));
+      let sent = false;
+      background("שולח את הבקשה", async () => {
+        if (sent) return;
+        const r = await call("fix", { absenceId: x.absenceId, date: x.from, text: draft.text });
+        sent = true;
+        card.replaceChildren(fixCard(r.fix || { ...draft, status: "חדש" }));
+      }, { line, okText: "✓ הבקשה נשלחה ונמצאת בטיפול. אפשר לסגור את הדף" });
     } } }, "שליחת הבקשה");
     $("#main").replaceChildren(
       h("h1", null, "בקשה ", h("span.accent", null, "למשרד")),
@@ -604,7 +658,7 @@
     { kind: "office", from: addDays(T, -45), to: addDays(T, -45), fromHour: 4, toHour: 8, reason: "מחלה", absenceId: "7", source: "המשרד", sick: true, hasNote: false, lock: "office" },
   ];
   async function demo(action, body) {
-    await new Promise(r => setTimeout(r, 350));
+    await new Promise(r => setTimeout(r, ["report", "change", "fix", "note", "cancel"].includes(action) ? 2500 : 350));
     if (action === "login") return { ok: true, token: "demo", teacher: "ישראל ישראלי" };
     if (action === "mine") return { ok: true, teacher: "ישראל ישראלי", items: demoItems, synced: "15/11/2026 19:40", today: T,
       fixes: [{ at: "10/11/2026 08:12", date: addDays(T, -45), text: "הייתי רק עד שעה 6", status: "טופל", answer: "תוקן, השעות עודכנו" },
