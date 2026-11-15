@@ -211,6 +211,7 @@
   function daysOf(x) { let n = 0, d = x.from; while (d <= (x.to || x.from)) { if (parseISO(d).getDay() !== 6) n++; d = addDays(d, 1); } return n; }
 
   let mine = [];  // the last list from the sheet, also used to warn about overlaps
+  let fixes = []; // the teacher's requests to the office, with their status
   const filt = { month: "", reason: "", source: "", missing: false };
 
   async function showHome() {
@@ -225,6 +226,7 @@
     try { r = await call("mine"); } catch (ex) { body.replaceChildren(h("div.empty", null, ex.message)); return; }
     if (r.teacher && r.teacher !== teacher) { teacher = r.teacher; store.set("tp_teacher", teacher); setWho(); $("#main h1 .accent").textContent = teacher; }
     mine = r.items || [];
+    fixes = r.fixes || [];
     const today = r.today || todayISO();
     const live = mine.filter(x => !isClosed(x));
     const upcoming = live.filter(x => (x.to || x.from) >= today).sort((a, b) => a.from.localeCompare(b.from) || a.fromHour - b.fromHour);
@@ -267,14 +269,45 @@
       hist.replaceChildren(...(shown.length ? shown.map(slip) : [h("div.empty", null, past.length ? "אין היעדרויות שמתאימות לסינון" : "אין עדיין היעדרויות קודמות השנה")]));
     }
     paintHistory();
+    // missing sick notes: one tap to attach (one file may cover several days)
+    const banner = noNote.length ? h("div.banner", null,
+      h("div", null, h("b", null, "חסר אישור מחלה"), " ל־",
+        noNote.slice().sort((a, b) => a.from.localeCompare(b.from)).slice(0, 4).map(x => dm(x.from)).join(", "),
+        noNote.length > 4 ? ` ועוד ${noNote.length - 4}` : ""),
+      h("button.btn.primary", { on: { click: () => showAttach(noNote[0]) } }, "לצירוף")) : null;
+    const reqs = fixes.length ? [h("h2", null, "הבקשות שלי למשרד"), h("div.fixes", null, fixes.slice(0, 8).map(fixCard))] : [];
     body.replaceChildren(
+      banner,
       stats,
+      ...reqs,
       h("h2", null, "קרובות"),
       upcoming.length ? h("div.slips", null, upcoming.map(slip)) : h("div.empty", null, "אין היעדרויות קרובות. 🌿"),
       h("h2", null, "מתחילת השנה"), bar, hist,
       r.synced ? h("div.synced", null, `המצב במערכת עודכן לאחרונה: ${r.synced}`) : null,
       matchMedia("(display-mode: standalone)").matches ? null
         : h("div.synced", null, "טיפ: אפשר להוסיף את הדף למסך הבית בטלפון (שיתוף ← הוספה למסך הבית), ולפתוח אותו כמו אפליקציה."));
+  }
+
+  // Where the absence stands, in plain words: sent -> in the system -> substitutes.
+  const ENTERED = ["הוזן בשוטף", "עודכן בשוטף", "כבר היה במערכת"];
+  function steps(x) {
+    const inSys = x.kind === "office" || ENTERED.includes(x.status);
+    const [a, b] = String(x.subs || "").split("/").map(Number);
+    const st = [["נשלח", "done"], [inSys ? "נרשם במערכת" : "ממתין לרישום במערכת", inSys ? "done" : "now"]];
+    if (inSys && b > 0) st.push([a >= b ? "כל השעות שובצו" : `שובצו מחליפים ל־${a} מתוך ${b} שעות`, a >= b ? "done" : "now"]);
+    if (x.kind === "office") st.shift();
+    return h("ol.steps", { "aria-label": "מצב ההיעדרות" }, st.map(([t, c]) => h("li", { class: c }, t)));
+  }
+  const FIX_ST = { "חדש": ["נשלחה", "wait"], "נשלח למנדי": ["בטיפול", "wait"], "טופל": ["טופלה", "ok"] };
+  const fixStatus = f => FIX_ST[f.status] || [f.status || "נשלחה", "wait"];
+  function fixCard(f) {
+    const [label, tone] = fixStatus(f);
+    return h("div.fix", null,
+      h("div.fix-top", null, h("span.tag", { class: tone }, label),
+        f.date ? h("span", null, `היעדרות ב${dayName(f.date)} ${dm(f.date)}`) : null,
+        h("span.muted", null, f.at)),
+      h("div.fix-text", null, f.text),
+      f.answer ? h("div.fix-answer", null, h("b", null, "תשובת המשרד: "), f.answer) : null);
   }
 
   function slip(x) {
@@ -290,11 +323,16 @@
       } else {
         actions.push(h("button.btn", { on: { click: () => showFix(x) } }, "בקשת תיקון"));
       }
-      if (x.sick || x.hasNote) actions.push(h("button.btn.attach", { on: { click: () => pickNote(x) } }, x.hasNote ? "צירוף אישור נוסף" : "צירוף אישור מחלה"));
+      if (x.sick && !x.hasNote) actions.push(h("button.btn.attach", { on: { click: () => showAttach(x) } }, "צירוף אישור מחלה"));
     }
-    // "missing" only once the absence has started; a future one just offers the button
-    const note = closed ? null : x.hasNote ? h("span.badge.ok", null, "✓ אישור מחלה צורף")
-      : x.sick && x.from <= todayISO() ? h("span.badge.bad", null, "חסר אישור מחלה") : null;
+    // the note: download any time; replace if it was the wrong file
+    const notes = x.notes || [];
+    const noteRow = x.hasNote ? h("div.slip-badges", null, h("span.badge.ok", null, "✓ אישור מחלה צורף"),
+      notes.map((n, i) => h("button.linkbtn", { on: { click: () => downloadNote(n) } }, notes.length > 1 ? `הורדה ${i + 1}` : "הורדה")),
+      closed ? null : h("button.linkbtn", { on: { click: () => replaceNote(x) } }, "החלפת הקובץ"),
+      closed ? null : h("button.linkbtn", { on: { click: () => pickNote(x) } }, "עמוד נוסף"))
+      : !closed && x.sick && x.from <= todayISO() ? h("div.slip-badges", null, h("span.badge.bad", null, "חסר אישור מחלה")) : null;
+    const myFix = fixes.find(f => f.date === x.from && f.status !== "טופל");
     return h("div.slip", { class: closed ? "closed" : "" },
       h("div.slip-top", null,
         h("div.slip-date", null, `${dayName(x.from)}, `, h("span.num", null, d1.getDate()), ` ב${MONTHS[d1.getMonth()]}`,
@@ -304,7 +342,9 @@
       h("div.slip-meta", null, hp ? h("span", null, `${hp.day} ב${hp.month}`) : null,
         h("span", null, hoursText(x.fromHour, x.toHour)), h("span", null, x.reason)),
       x.note ? h("div.slip-note", null, x.note) : null,
-      note ? h("div.slip-badges", null, note) : null,
+      closed ? null : steps(x),
+      noteRow,
+      myFix ? h("div.slip-fix", null, "בקשה למשרד: ", h("b", null, fixStatus(myFix)[0])) : null,
       actions.length ? h("div.slip-actions", null, actions) : null);
   }
 
@@ -327,24 +367,89 @@
     } catch (e) { return file; }
   }
   const b64 = f => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(String(r.result).split(",")[1]); r.onerror = bad; r.readAsDataURL(f); });
-  async function uploadNote(x, file) {
+  async function uploadNote(x, file, opts = {}) {
     const f = await shrink(file);
     if (f.size > MAX_MB * 1024 * 1024) throw new Error(`הקובץ גדול מדי (עד ${MAX_MB}MB)`);
     const mime = f.type || (/\.pdf$/i.test(file.name) ? "application/pdf" : "image/jpeg");
-    await call("note", { row: x.kind === "report" ? x.row : "", absenceId: x.absenceId || "", mime, data: await b64(f) });
+    const ref = y => ({ row: y.kind === "report" ? y.row : "", absenceId: y.absenceId || "" });
+    const items = (opts.items && opts.items.length ? opts.items : [x]).map(ref);
+    await call("note", { ...ref(x), items, replace: !!opts.replace, mime, data: await b64(f) });
   }
   function noteInput(onFile) {
     const inp = h("input", { type: "file", accept: "image/*,application/pdf", class: "hidden" });
     inp.addEventListener("change", () => { if (inp.files[0]) onFile(inp.files[0]); inp.value = ""; });
     return inp;
   }
+  function chooseFile(onFile) {
+    const inp = noteInput(onFile);
+    document.body.append(inp); inp.click(); setTimeout(() => inp.remove(), 60000);
+  }
+  /** One more page for an absence that already has a note. */
   function pickNote(x) {
-    const inp = noteInput(async file => {
+    chooseFile(async file => {
       toast("מעלה את האישור…");
       try { await uploadNote(x, file); toast("✓ האישור צורף"); showHome(); }
       catch (ex) { toast(ex.message, true); }
     });
-    document.body.append(inp); inp.click(); setTimeout(() => inp.remove(), 60000);
+  }
+  /** The wrong file was sent: the new one takes its place (the old goes to the office's trash). */
+  function replaceNote(x) {
+    modal("החלפת אישור המחלה", "הקובץ החדש יחליף את הקובץ שצורף להיעדרות הזאת. להמשיך?", [
+      ["בחירת קובץ חדש", () => chooseFile(async file => {
+        toast("מעלה את הקובץ החדש…");
+        try { await uploadNote(x, file, { replace: true }); toast("✓ האישור הוחלף"); showHome(); }
+        catch (ex) { toast(ex.message, true); }
+      }), "primary"],
+      ["ביטול", null, ""]]);
+  }
+  /** The note comes through the sheet's script; the teacher never gets a Drive link. */
+  async function downloadNote(n) {
+    toast("מוריד…");
+    try {
+      const r = await call("noteFile", { n: n.n });
+      const bin = atob(r.data), bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const url = URL.createObjectURL(new Blob([bytes], { type: r.mime || "application/octet-stream" }));
+      const a = h("a", { href: url, download: r.name || "אישור מחלה" });
+      document.body.append(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30000);
+      toast("✓ הקובץ ירד");
+    } catch (ex) { toast(ex.message, true); }
+  }
+  /** Attach a sick note: to this absence, and to any other sick absences it covers. */
+  function showAttach(x) {
+    const today = todayISO();
+    const others = mine.filter(y => y !== x && y.sick && !y.hasNote && !isClosed(y) && y.from <= addDays(today, 7))
+      .sort((a, b) => a.from.localeCompare(b.from));
+    const picked = new Set([x]);
+    const row = y => {
+      const cb = h("input", { type: "checkbox", checked: picked.has(y) ? "" : null });
+      cb.checked = picked.has(y);
+      cb.addEventListener("change", () => { cb.checked ? picked.add(y) : picked.delete(y); });
+      return h("label.check.pick", null, cb, h("span", null, h("b", null, `${dayName(y.from)} ${dm(y.from)}`),
+        y.to && y.to !== y.from ? ` עד ${dm(y.to)}` : "", ` · ${hoursText(y.fromHour, y.toHour)} · ${y.reason}`));
+    };
+    const fileName = h("span.file-name", null, "צילום ברור או PDF");
+    let file = null;
+    const fileInp = noteInput(f => { file = f; fileName.textContent = "📎 " + (f.name || "אישור"); });
+    const err = h("p.error");
+    const send = h("button.btn.primary.wide", { type: "button", on: { click: async () => {
+      err.textContent = "";
+      if (!file) { err.textContent = "בחר קובץ"; return; }
+      if (!picked.size) { err.textContent = "סמן לאיזו היעדרות האישור שייך"; return; }
+      send.disabled = true; send.textContent = "מעלה…";
+      try { await uploadNote(x, file, { items: [...picked] }); toast("✓ האישור צורף"); showHome(); }
+      catch (ex) { err.textContent = ex.message; send.disabled = false; send.textContent = "שליחת האישור"; }
+    } } }, "שליחת האישור");
+    $("#main").replaceChildren(
+      h("h1", null, "אישור ", h("span.accent", null, "מחלה")),
+      h("p.lead", null, others.length ? "אם האישור מכסה כמה היעדרויות, סמן את כולן. הקובץ יעלה פעם אחת." : "צרף צילום או PDF של האישור."),
+      h("div.page", null,
+        h("div.field", null, h("span.label", null, "לאיזו היעדרות?"), row(x), others.map(row)),
+        h("div.field", null, h("span.label", null, "הקובץ"),
+          h("div.row", null, h("button.btn", { type: "button", on: { click: () => fileInp.click() } }, "בחירת קובץ"), fileName), fileInp),
+        send, err,
+        h("div.row", { style: "justify-content:center;margin-top:8px" }, h("button.btn.link", { type: "button", on: { click: showHome } }, "חזרה"))));
   }
 
   // ── report / change ──────────────────────────────────────────────────
@@ -414,8 +519,7 @@
           try { await uploadNote({ kind: "report", row: edit ? edit.row : res.row, absenceId: edit ? edit.absenceId : "" }, file); }
           catch (ex) { toast("הדיווח נשלח, אבל האישור לא עלה: " + ex.message, true); showHome(); return; }
         }
-        toast(edit ? "✓ השינוי נשלח" : "✓ הדיווח נשלח. תודה");
-        showHome();
+        showSent({ edit: !!edit, from, to, fromHour: body.fromHour, toHour: body.toHour, reason, note: body.note, file: !!(file && SICK.includes(reason)) });
       } catch (ex) {
         if (/לפנות למזכירות/.test(ex.message)) lockedModal({ ...(edit || {}), lock: "" });
         err.textContent = ex.message; send.disabled = false; send.textContent = sendLabel;
@@ -436,6 +540,24 @@
         h("div.row", { style: "justify-content:center;margin-top:8px" }, h("button.btn.link", { type: "button", on: { click: showHome } }, "חזרה"))));
   }
 
+  /** What was sent, and what happens next. */
+  function showSent(r) {
+    const when = r.to && r.to !== r.from ? `${dayName(r.from)} ${dm(r.from)} עד ${dayName(r.to)} ${dm(r.to)}` : `${dayName(r.from)} ${dm(r.from)}`;
+    $("#main").replaceChildren(
+      h("div.sent-mark", { "aria-hidden": "true" }, "✓"),
+      h("h1", null, r.edit ? "השינוי " : "הדיווח ", h("span.accent", null, "נשלח")),
+      h("div.page", null,
+        h("div.sum-row", null, h("span", null, "מתי"), h("b", null, when)),
+        h("div.sum-row", null, h("span", null, "שעות"), h("b", null, hoursText(r.fromHour, r.toHour))),
+        h("div.sum-row", null, h("span", null, "סיבה"), h("b", null, r.reason)),
+        r.note ? h("div.sum-row", null, h("span", null, "פרטים"), h("b", null, r.note)) : null,
+        SICK.includes(r.reason) ? h("div.sum-row", null, h("span", null, "אישור מחלה"), h("b", null, r.file ? "צורף ✓" : "אפשר לצרף אחר כך")) : null,
+        h("p.next", null, "הדיווח הגיע למשרד, ויירשם במערכת תוך כמה דקות. את המצב שלו תראה בדף שלך."),
+        h("div.remind", null, h("b", null, "לא לשכוח: "), "לעדכן את המנהל, ואת רכז ההיעדרויות והמזכירות."),
+        h("button.btn.primary.wide", { type: "button", on: { click: showHome } }, "לדף שלי")));
+    window.scrollTo(0, 0);
+  }
+
   async function cancel(x) {
     const when = `${dayName(x.from)} ${dm(x.from)}`;
     modal("ביטול הדיווח", `לבטל את הדיווח על ${when}?`, [
@@ -452,7 +574,16 @@
     const send = h("button.btn.primary.wide", { type: "button", on: { click: async () => {
       if (!text.value.trim()) { err.textContent = "כתוב מה צריך לתקן"; return; }
       send.disabled = true;
-      try { await call("fix", { absenceId: x.absenceId, date: x.from, text: text.value }); toast("✓ הבקשה נשלחה למשרד"); showHome(); }
+      try {
+        const r = await call("fix", { absenceId: x.absenceId, date: x.from, text: text.value });
+        const f = r.fix || { at: "", date: x.from, text: text.value, status: "חדש" };
+        $("#main").replaceChildren(
+          h("div.sent-mark", { "aria-hidden": "true" }, "✓"),
+          h("h1", null, "הבקשה ", h("span.accent", null, "נשלחה")),
+          h("div.page", null, fixCard(f),
+            h("p.next", null, "הבקשה הגיעה לרכז ההיעדרויות והיא בטיפול. כשיטפלו בה, הסטטוס כאן יתעדכן ל\"טופלה\", ואם תהיה תשובה, תראה אותה כאן."),
+            h("button.btn.primary.wide", { type: "button", on: { click: showHome } }, "לדף שלי")));
+      }
       catch (ex) { err.textContent = ex.message; send.disabled = false; }
     } } }, "שליחת הבקשה");
     $("#main").replaceChildren(
@@ -465,17 +596,22 @@
   // ── demo data (?demo=1) ──────────────────────────────────────────────
   const T = todayISO();
   const demoItems = [
-    { kind: "report", row: 7, from: nextSchoolDay(addDays(T, 1)), to: nextSchoolDay(addDays(T, 1)), fromHour: 1, toHour: 10, reason: "מחלה", note: "", status: "הוזן בשוטף", absenceId: "1", source: "המורה", sick: true, hasNote: false, lock: "" },
+    { kind: "report", row: 7, from: nextSchoolDay(addDays(T, 1)), to: nextSchoolDay(addDays(T, 1)), fromHour: 1, toHour: 10, reason: "מחלה", note: "", status: "הוזן בשוטף", absenceId: "1", source: "המורה", sick: true, hasNote: false, subs: "2/5", lock: "" },
     { kind: "report", row: 9, from: nextSchoolDay(addDays(T, 6)), to: nextSchoolDay(addDays(T, 7)), fromHour: 3, toHour: 10, reason: "אחר", note: "השתלמות", status: "חדש", absenceId: "", source: "המורה", sick: false, hasNote: false, lock: "" },
     { kind: "office", from: nextSchoolDay(addDays(T, 3)), to: nextSchoolDay(addDays(T, 3)), fromHour: 5, toHour: 6, reason: "אחר", absenceId: "3", source: "המשרד", sick: false, hasNote: false, lock: "office" },
-    { kind: "report", row: 4, from: addDays(T, -12), to: addDays(T, -12), fromHour: 1, toHour: 10, reason: "מחלה", status: "הוזן בשוטף", absenceId: "5", source: "המורה", sick: true, hasNote: true, lock: "past" },
+    { kind: "report", row: 4, from: addDays(T, -12), to: addDays(T, -12), fromHour: 1, toHour: 10, reason: "מחלה", status: "הוזן בשוטף", absenceId: "5", source: "המורה", sick: true, hasNote: true, notes: [{ n: 2, name: "ישראלי 3.11.png" }], subs: "5/5", lock: "past" },
     { kind: "report", row: 3, from: addDays(T, -30), to: addDays(T, -29), fromHour: 1, toHour: 10, reason: "מחלת ילד", status: "הוזן בשוטף", absenceId: "6", source: "המורה", sick: true, hasNote: false, lock: "past" },
     { kind: "office", from: addDays(T, -45), to: addDays(T, -45), fromHour: 4, toHour: 8, reason: "מחלה", absenceId: "7", source: "המשרד", sick: true, hasNote: false, lock: "office" },
   ];
   async function demo(action, body) {
     await new Promise(r => setTimeout(r, 350));
     if (action === "login") return { ok: true, token: "demo", teacher: "ישראל ישראלי" };
-    if (action === "mine") return { ok: true, teacher: "ישראל ישראלי", items: demoItems, synced: "15/11/2026 19:40", today: T };
+    if (action === "mine") return { ok: true, teacher: "ישראל ישראלי", items: demoItems, synced: "15/11/2026 19:40", today: T,
+      fixes: [{ at: "10/11/2026 08:12", date: addDays(T, -45), text: "הייתי רק עד שעה 6", status: "טופל", answer: "תוקן, השעות עודכנו" },
+              { at: "15/11/2026 18:30", date: nextSchoolDay(addDays(T, 3)), text: "לא נעדרתי בשעה 6", status: "נשלח למנדי", answer: "" }] };
+    if (action === "noteFile") return { ok: true, name: "ישראלי 3.11.png", mime: "image/png",
+      data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" };
+    if (action === "fix") return { ok: true, fix: { at: "15/11/2026 19:45", date: body.date, text: body.text, status: "חדש", answer: "" } };
     if (action === "report") return { ok: true, row: 99 };
     return { ok: true };
   }
