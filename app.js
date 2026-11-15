@@ -29,6 +29,11 @@
     }
     return el;
   }
+  /** Like el.replaceChildren, but empty items (null/false) are skipped, not shown as "null". */
+  function put(el, ...kids) {
+    el.replaceChildren(...kids.flat().filter(k => k !== null && k !== undefined && k !== false));
+    return el;
+  }
   const z = n => String(n).padStart(2, "0");
   const iso = d => `${d.getFullYear()}-${z(d.getMonth() + 1)}-${z(d.getDate())}`;
   const parseISO = s => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
@@ -117,7 +122,7 @@
           }, h("b", null, d), hp ? h("small", null, hp.day) : null));
         }
         const a = heb(new Date(y, m, 1)), b = heb(new Date(y, m, n));
-        pop.replaceChildren(
+        put(pop, 
           h("div.dp-head", null,
             h("button.dp-nav", { type: "button", "aria-label": "חודש קודם", on: { click: () => { view.setMonth(m - 1); draw(); } } }, "→"),
             h("div.dp-title", null, `${MONTHS[m]} ${y}`, a ? h("small", null, a.month === b.month ? `${a.month} ${a.year}` : `${a.month}–${b.month} ${b.year}`) : null),
@@ -181,7 +186,7 @@
     const el = h("div.status-line");
     el.set = (kind, text, retry) => {
       el.className = "status-line " + kind;
-      el.replaceChildren(...[h("span", null, text), retry ? h("button.btn.small", { type: "button", on: { click: retry } }, "לנסות שוב") : null].filter(Boolean));
+      put(el, ...[h("span", null, text), retry ? h("button.btn.small", { type: "button", on: { click: retry } }, "לנסות שוב") : null].filter(Boolean));
     };
     return el;
   }
@@ -209,7 +214,7 @@
 
   // ── screens ──────────────────────────────────────────────────────────
   function setWho() {
-    $("#who").replaceChildren(...(teacher ? [h("span", null, teacher), h("button", { on: { click: logout } }, "יציאה")] : []));
+    put($("#who"), ...(teacher ? [h("span", null, teacher), h("button", { on: { click: logout } }, "יציאה")] : []));
   }
   function logout() { token = teacher = null; store.del("tp_token"); store.del("tp_teacher"); setWho(); showLogin(); }
 
@@ -234,7 +239,7 @@
       h("div.field", null, h("label.label", null, "שם פרטי ושם משפחה"), name),
       h("div.field", null, h("label.label", null, "מספר זהות"), id, h("div.hint", null, "משמש רק לזיהוי. לא נשמר בדף.")),
       go, err);
-    $("#main").replaceChildren(
+    put($("#main"), 
       h("h1", null, "שלום ", h("span.accent", null, "מורה")),
       h("p.lead", null, `${CFG.school || ""}: דיווח על היעדרות, וצפייה בהיעדרויות שלך`),
       form);
@@ -271,13 +276,13 @@
     onHome = true;
     setWho();
     const body = h("div", null, loading("טוען את ההיעדרויות שלך…"));
-    $("#main").replaceChildren(
+    put($("#main"), 
       h("h1", null, "שלום, ", h("span.accent", null, teacher || "")),
       h("p.lead", null, "ההיעדרויות שלך מתחילת שנת הלימודים"),
       h("button.btn.primary.wide", { on: { click: () => showForm() } }, "+ דיווח היעדרות"),
       body);
     let r;
-    try { r = await call("mine"); } catch (ex) { body.replaceChildren(h("div.empty", null, ex.message)); return; }
+    try { r = await call("mine"); } catch (ex) { put(body, h("div.empty", null, ex.message)); return; }
     if (r.teacher && r.teacher !== teacher) { teacher = r.teacher; store.set("tp_teacher", teacher); setWho(); $("#main h1 .accent").textContent = teacher; }
     mine = r.items || [];
     fixes = r.fixes || [];
@@ -311,7 +316,7 @@
       const monthSel = h("select.input.month-sel", { "aria-label": "חודש", on: { change: e => { filt.month = e.target.value; paintHistory(); } } },
         h("option", { value: "" }, "כל החודשים"),
         months.map(m => { const d = parseISO(m + "-01"); return h("option", { value: m, selected: filt.month === m }, `${MONTHS[d.getMonth()]} ${d.getFullYear()}`); }));
-      bar.replaceChildren(
+      put(bar, 
         h("div.frow", null, h("span.flabel", null, "חודש"), monthSel),
         chipRow("סיבה", [["", "הכל"], ...reasons.map(x => [x, x])], "reason"),
         chipRow("עדכן", [["", "הכל"], ["המורה", "אני"], ["המשרד", "המשרד"]], "source"),
@@ -320,7 +325,7 @@
       const rows = past.filter(x => (!filt.month || x.from.startsWith(filt.month)) && (!filt.reason || x.reason === filt.reason)
         && (!filt.source || x.source === filt.source) && (!filt.missing || needsNote(x)));
       const shown = filt.missing ? rows.concat(upcoming.filter(needsNote)) : rows;
-      hist.replaceChildren(...(shown.length ? shown.map(slip) : [h("div.empty", null, past.length ? "אין היעדרויות שמתאימות לסינון" : "אין עדיין היעדרויות קודמות השנה")]));
+      put(hist, ...(shown.length ? shown.map(slip) : [h("div.empty", null, past.length ? "אין היעדרויות שמתאימות לסינון" : "אין עדיין היעדרויות קודמות השנה")]));
     }
     paintHistory();
     // missing sick notes: one tap to attach (one file may cover several days)
@@ -334,7 +339,7 @@
       h("summary", null, h("span", null, "הבקשות שלי למשרד"),
         h("span.count", null, openFixes ? `${openFixes} בטיפול` : `${fixes.length}`)),
       h("div.fixes", null, fixes.slice(0, 8).map(fixCard)))] : [];
-    body.replaceChildren(
+    put(body, 
       banner,
       stats,
       ...reqs,
@@ -491,7 +496,7 @@
       showHome();
       background("מעלה את אישור המחלה", () => uploadNote(x, f, { items }), { okText: "✓ האישור צורף. אפשר לסגור את הדף" });
     } } }, "שליחת האישור");
-    $("#main").replaceChildren(
+    put($("#main"), 
       h("h1", null, "אישור ", h("span.accent", null, "מחלה")),
       h("p.lead", null, others.length ? "אם האישור מכסה כמה היעדרויות, סמן את כולן. הקובץ יעלה פעם אחת." : "צרף צילום או PDF של האישור."),
       h("div.page", null,
@@ -522,7 +527,7 @@
     const toPick = datePicker(to, d => { to = d; checkOverlap(); }, from);
     const fromPick = datePicker(from, d => { from = d; if (to < d) { to = d; toPick.setValue(d); } checkOverlap(); });
     const hours = h("div.chips.hours");
-    const paintHours = () => { hours.replaceChildren(...Array.from({ length: 10 }, (_, i) => {
+    const paintHours = () => { put(hours, ...Array.from({ length: 10 }, (_, i) => {
       const n = i + 1, inRange = n >= fh && n <= th;
       return h("button.chip", { type: "button", class: (n === fh || n === th) ? "on" : inRange ? "in" : "",
         "aria-pressed": inRange ? "true" : "false",
@@ -536,14 +541,14 @@
     const hoursField = h("div.field", null, h("span.label", null, "אילו שעות? לחץ על השעה הראשונה ואז על האחרונה"), hours);
     const scope = h("div.chips");
     const paintScope = () => {
-      scope.replaceChildren(
+      put(scope, 
         h("button.chip", { type: "button", class: full ? "on" : "", on: { click: () => { full = true; fh = 1; th = 10; paintScope(); } } }, "יום מלא"),
         h("button.chip", { type: "button", class: full ? "" : "on", on: { click: () => { full = false; anchor = null; if (fh === 1 && th === 10) { fh = th = 1; } paintScope(); } } }, "חלק מהיום"));
       hoursField.classList.toggle("hidden", full); paintHours();
     };
     const reasons = h("div.chips");
     const paintReasons = () => {
-      reasons.replaceChildren(...REASONS.map(r => h("button.chip", { type: "button", class: r === reason ? "on" : "",
+      put(reasons, ...REASONS.map(r => h("button.chip", { type: "button", class: r === reason ? "on" : "",
         on: { click: () => { reason = r; paintReasons(); } } }, r)));
       noteField.classList.toggle("hidden", !SICK.includes(reason));
     };
@@ -579,7 +584,7 @@
       }, { line, okText: edit ? "✓ השינוי נשמר. אפשר לסגור את הדף" : "✓ הדיווח נשמר. אפשר לסגור את הדף",
            onFail: ex => { if (/לפנות למזכירות/.test(ex.message)) lockedModal({ ...(edit || {}), lock: "" }); } });
     } } }, sendLabel);
-    $("#main").replaceChildren(
+    put($("#main"), 
       h("h1", null, edit ? "שינוי " : "דיווח ", h("span.accent", null, "היעדרות")),
       h("p.lead", null, edit ? "עדכן את הפרטים ושלח. המשרד יקבל הודעה." : "הדיווח מגיע למשרד מיד, ונרשם במערכת תוך כמה דקות."),
       h("div.page", null,
@@ -598,7 +603,7 @@
   function showSent(r, line) {
     onHome = false;
     const when = r.to && r.to !== r.from ? `${dayName(r.from)} ${dm(r.from)} עד ${dayName(r.to)} ${dm(r.to)}` : `${dayName(r.from)} ${dm(r.from)}`;
-    $("#main").replaceChildren(
+    put($("#main"), 
       h("div.sent-mark", { "aria-hidden": "true" }, "✓"),
       h("h1", null, r.edit ? "השינוי " : "הדיווח ", h("span.accent", null, "נשלח")),
       h("div.page", null,
@@ -634,7 +639,7 @@
       const card = h("div", null, fixCard({ ...draft, status: "שולח…" }));
       const line = statusLine();
       onHome = false;
-      $("#main").replaceChildren(
+      put($("#main"), 
         h("div.sent-mark", { "aria-hidden": "true" }, "✓"),
         h("h1", null, "הבקשה ", h("span.accent", null, "נשלחה")),
         h("div.page", null, card, line,
@@ -645,10 +650,10 @@
         if (sent) return;
         const r = await call("fix", { absenceId: x.absenceId, date: x.from, text: draft.text });
         sent = true;
-        card.replaceChildren(fixCard(r.fix || { ...draft, status: "חדש" }));
+        put(card, fixCard(r.fix || { ...draft, status: "חדש" }));
       }, { line, okText: "✓ הבקשה נשלחה ונמצאת בטיפול. אפשר לסגור את הדף" });
     } } }, "שליחת הבקשה");
-    $("#main").replaceChildren(
+    put($("#main"), 
       h("h1", null, "בקשה ", h("span.accent", null, "למשרד")),
       h("p.lead", null, `היעדרות ביום ${dayName(x.from)} ${dm(x.from)}, ${hoursText(x.fromHour, x.toHour)}. הבקשה תגיע למזכירות ולרכז ההיעדרויות.`),
       h("div.page", null, h("div.field", null, h("label.label", null, "מה צריך לשנות?"), text), send, err,
