@@ -72,6 +72,13 @@
     del(k) { try { sessionStorage.removeItem(k); } catch (e) { /* private mode */ } },
   };
 
+  /** Choices that should survive closing the page (filters). Device only, nothing sensitive. */
+  const pref = {
+    get(k) { try { return JSON.parse(localStorage.getItem("tp_" + k) || "null"); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem("tp_" + k, JSON.stringify(v)); } catch (e) { /* private mode */ } },
+    del(k) { try { localStorage.removeItem("tp_" + k); } catch (e) { /* private mode */ } },
+  };
+
   /** Israeli ID check digit (same check as the server). */
   function idValid(s) {
     const d = String(s || "").replace(/\D/g, "").padStart(9, "0");
@@ -216,7 +223,7 @@
   function setWho() {
     put($("#who"), ...(teacher ? [h("span", null, teacher), h("button", { on: { click: logout } }, "יציאה")] : []));
   }
-  function logout() { token = teacher = null; store.del("tp_token"); store.del("tp_teacher"); setWho(); showLogin(); }
+  function logout() { token = teacher = null; store.del("tp_token"); store.del("tp_teacher"); pref.del("fl"); pref.del("filt"); setWho(); showLogin(); }
 
   function showLogin(msg = "") {
     onHome = false;
@@ -270,7 +277,21 @@
 
   let mine = [];  // the last list from the sheet, also used to warn about overlaps
   let fixes = []; // the teacher's requests to the office, with their status
-  const filt = { month: "", reason: "", source: "", missing: false };
+  const filt = Object.assign({ month: "", reason: "", source: "", missing: false }, pref.get("filt") || {}, { missing: false });
+
+  /** A labelled dropdown: opts = [[value, text], ...]. Phones get a native picker. */
+  function fsel(label, obj, key, opts, repaint) {
+    return h("label.fsel", null, h("span.flabel", null, label),
+      h("select.input.sel", { on: { change: e => { obj[key] = e.target.value; repaint(); } } },
+        opts.map(([v, t]) => h("option", { value: v, selected: obj[key] === v }, t))));
+  }
+  /** Filters folded away: one line with a count of what is active, tap to open. */
+  function filterBox(active, ...fields) {
+    const f = fields.flat().filter(Boolean);
+    if (!f.length) return null;
+    return h("details.filter-box", { open: active > 0 }, h("summary", null, "סינון", active ? h("span.count", null, `${active} פעילים`) : null),
+      h("div.fgrid", null, f));
+  }
 
   async function showHome() {
     onHome = true;
@@ -309,20 +330,18 @@
     const reasons = [...new Set(mine.map(x => x.reason).filter(Boolean))];
     const hist = h("div.slips");
     const bar = h("div.filters");
-    function chipRow(label, opts, key) {
-      return h("div.frow", null, h("span.flabel", null, label), h("div.chips", null, opts.map(([v, t]) => h("button.chip", {
-        type: "button", class: filt[key] === v ? "on" : "", on: { click: () => { filt[key] = v; paintHistory(); } } }, t))));
-    }
     function paintHistory() {
-      const monthSel = h("select.input.month-sel", { "aria-label": "חודש", on: { change: e => { filt.month = e.target.value; paintHistory(); } } },
-        h("option", { value: "" }, "כל החודשים"),
-        months.map(m => { const d = parseISO(m + "-01"); return h("option", { value: m, selected: filt.month === m }, `${MONTHS[d.getMonth()]} ${d.getFullYear()}`); }));
-      put(bar, 
-        h("div.frow", null, h("span.flabel", null, "חודש"), monthSel),
-        chipRow("סיבה", [["", "הכל"], ...reasons.map(x => [x, x])], "reason"),
-        chipRow("עדכן", [["", "הכל"], ["המורה", "אני"], ["המשרד", "המשרד"]], "source"),
-        h("div.frow", null, h("span.flabel", null, ""), h("button.chip", { type: "button", class: filt.missing ? "on" : "",
-          on: { click: () => { filt.missing = !filt.missing; paintHistory(); } } }, "רק בלי אישור מחלה")));
+      if (filt.month && !months.includes(filt.month)) filt.month = "";      // a month that no longer exists
+      if (filt.reason && !reasons.includes(filt.reason)) filt.reason = "";
+      pref.set("filt", { month: filt.month, reason: filt.reason, source: filt.source });
+      const act = [filt.month, filt.reason, filt.source, filt.missing].filter(Boolean).length;
+      put(bar, filterBox(act,
+        fsel("חודש", filt, "month", [["", "כל החודשים"], ...months.map(m => { const d = parseISO(m + "-01"); return [m, `${MONTHS[d.getMonth()]} ${d.getFullYear()}`]; })], paintHistory),
+        reasons.length > 1 ? fsel("סיבה", filt, "reason", [["", "הכל"], ...reasons.map(x => [x, x])], paintHistory) : null,
+        fsel("עדכן", filt, "source", [["", "הכל"], ["המורה", "אני"], ["המשרד", "המשרד"]], paintHistory),
+        h("label.fsel", null, h("span.flabel", null, "אישור מחלה"),
+          h("select.input.sel", { on: { change: e => { filt.missing = e.target.value === "missing"; paintHistory(); } } },
+            h("option", { value: "" }, "הכל"), h("option", { value: "missing", selected: filt.missing }, "רק בלי אישור")))));
       const rows = past.filter(x => (!filt.month || x.from.startsWith(filt.month)) && (!filt.reason || x.reason === filt.reason)
         && (!filt.source || x.source === filt.source) && (!filt.missing || needsNote(x)));
       const shown = filt.missing ? rows.concat(upcoming.filter(needsNote)) : rows;
@@ -340,9 +359,22 @@
       h("summary", null, h("span", null, "הבקשות שלי למשרד"),
         h("span.count", null, openFixes ? `${openFixes} בטיפול` : `${fixes.length}`)),
       h("div.fixes", null, fixes.slice(0, 8).map(fixCard)))] : [];
+    const fillsLink = h("button.fills-link.hidden", { type: "button", on: { click: showFills } });
+    (async () => {      // loaded after the page is shown, so the home screen is not slowed down
+      try {
+        const f = fillsCache = await call("myFills");
+        const t = f.today || today, m = t.slice(0, 7), rows = f.rows || [];
+        const nowN = rows.filter(x => x.date <= t && x.date.startsWith(m)).length, soon = rows.filter(x => x.date > t).length;
+        if (!nowN && !soon) return;
+        put(fillsLink, h("span", null, "מילוי מקום"), h("b", null, `${nowN} שעות החודש`),
+          soon ? h("span.tag.soon", null, `${soon} קרובות`) : null, h("span.go", null, "‹"));
+        fillsLink.classList.remove("hidden");
+      } catch (e) { /* the tab itself will explain */ }
+    })();
     put(body, 
       banner,
       stats,
+      fillsLink,
       ...reqs,
       h("h2", null, "קרובות"),
       upcoming.length ? h("div.slips", null, upcoming.map(slip)) : h("div.empty", null, "אין היעדרויות קרובות. 🌿"),
@@ -663,7 +695,10 @@
   }
 
   // ── covered lessons ("מילויי מקום") ────────────────────────────────────
-  const fl = { group: "month", type: "", when: "", cls: "", who: "" };
+  const savedFl = pref.get("fl");
+  const fl = Object.assign({ group: "month", type: "", when: "", cls: "", who: "" }, savedFl || {});
+  let flInit = !!savedFl;   // false until this device has chosen something
+  let fillsCache = null;   // last answer of myFills, so the tab opens at once
   const sundayOf = s => addDays(s, -parseISO(s).getDay());
   const GROUPS = [["month", "חודש"], ["week", "שבוע"], ["day", "יום"], ["cls", "כיתה"], ["who", "במקום מי"], ["hour", "שעה"]];
 
@@ -697,8 +732,9 @@
       h("h1", null, "שלום, ", h("span.accent", null, teacher || "")),
       h("p.lead", null, "השעות שמילאת מקום מתחילת שנת הלימודים"),
       tabsBar("fills"), body);
-    let r;
-    try { r = await call("myFills"); } catch (ex) { put(body, h("div.empty", null, ex.message)); return; }
+    let r = fillsCache;
+    if (r) put(body, h("div.empty", null, "מעדכן…"));
+    try { r = fillsCache = await call("myFills"); } catch (ex) { if (!r) { put(body, h("div.empty", null, ex.message)); return; } }
     const all = (r.rows || []).slice().sort((a, b) => b.date.localeCompare(a.date) || b.hour - a.hour);
     const today = r.today || todayISO();
     if (!all.length) {
@@ -708,6 +744,9 @@
     }
     const done = all.filter(x => x.date <= today);
     const month = today.slice(0, 7);
+    // first time on this device: open on what is coming, if anything is
+    if (!flInit && all.some(x => x.date > today)) { fl.when = "soon"; fl.group = "day"; }
+    flInit = true;
     const stats = h("div.stats", null,
       h("div.stat", null, h("b", null, done.length), h("span", null, "שעות השנה")),
       h("div.stat", null, h("b", null, done.filter(x => x.date.startsWith(month)).length), h("span", null, "החודש")),
@@ -728,17 +767,17 @@
       }
     }
     function paint() {
-      const sel = (label, key, opts) => opts.length < 2 ? null : h("div.frow", null, h("span.flabel", null, label),
-        h("select.input.month-sel", { "aria-label": label, on: { change: e => { fl[key] = e.target.value; paint(); } } },
-          h("option", { value: "" }, "הכל"), opts.map(o => h("option", { value: o, selected: fl[key] === o }, o))));
+      if (fl.cls && !classes.includes(fl.cls)) fl.cls = "";                // gone from the data
+      if (fl.who && !whos.includes(fl.who)) fl.who = "";
+      if (fl.type && !types.includes(fl.type)) fl.type = "";
+      pref.set("fl", { group: fl.group, when: fl.when, type: fl.type, cls: fl.cls, who: fl.who });
+      const opt = (key, label, values) => values.length < 2 ? null : fsel(label, fl, key, [["", "הכל"], ...values.map(v => [v, v])], paint);
+      const act = [fl.when, fl.type, fl.cls, fl.who].filter(Boolean).length;
       put(bar,
-        h("div.frow", null, h("span.flabel", null, "סיכום לפי"), h("div.chips", null, GROUPS.map(([k, t]) =>
-          h("button.chip", { type: "button", class: fl.group === k ? "on" : "", on: { click: () => { fl.group = k; paint(); } } }, t)))),
-        h("div.frow", null, h("span.flabel", null, "מתי"), h("div.chips", null, [["", "הכל"], ["past", "שהיו"], ["soon", "קרובות"]].map(([k, t]) =>
-          h("button.chip", { type: "button", class: fl.when === k ? "on" : "", on: { click: () => { fl.when = k; paint(); } } }, t)))),
-        types.length > 1 ? h("div.frow", null, h("span.flabel", null, "סוג"), h("div.chips", null, [["", "הכל"], ...types.map(t => [t, t])].map(([k, t]) =>
-          h("button.chip", { type: "button", class: fl.type === k ? "on" : "", on: { click: () => { fl.type = k; paint(); } } }, t)))) : null,
-        sel("כיתה", "cls", classes), sel("במקום מי", "who", whos));
+        fsel("סיכום לפי", fl, "group", GROUPS, paint),
+        filterBox(act,
+          fsel("מתי", fl, "when", [["", "הכל"], ["past", "שהיו"], ["soon", "קרובות"]], paint),
+          opt("type", "סוג", types), opt("cls", "כיתה", classes), opt("who", "במקום מי", whos)));
       const rows = all.filter(x => (!fl.type || x.type === fl.type) && (!fl.cls || x.classes === fl.cls) && (!fl.who || x.instead === fl.who)
         && (!fl.when || (fl.when === "past" ? x.date <= today : x.date > today)));
       const groups = new Map();
