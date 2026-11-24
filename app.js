@@ -678,8 +678,10 @@
     const what = [x.classes, x.subject].filter(Boolean).join(" · ") || "שיעור";
     const ctx = { date: x.date, lead: `מילוי מקום ביום ${dayName(x.date)} ${dm(x.date)}, שעה ${x.hour}. הבקשה תגיע למזכירות ולרכז ההיעדרויות.`,
       prefix: `[מילוי מקום ${dm(x.date)} שעה ${x.hour}${x.classes ? ", " + x.classes : ""}] ` };
+    const hp = heb(parseISO(x.date));
     return h("div.frow2", { class: future ? "future" : "" },
-      h("div.fr-top", null, h("b", null, `${dayName(x.date)} ${dm(x.date)}`), h("span", null, `שעה ${x.hour}`),
+      h("div.fr-top", null, h("b", null, `${dayName(x.date)} ${dm(x.date)}`), hp ? h("span.fr-heb", null, `${hp.day} ב${hp.month}`) : null,
+        h("span", null, `שעה ${x.hour}`),
         x.type === "שעה נוספת" ? h("span.tag", null, "שעה נוספת") : null,
         future ? h("span.tag.soon", null, "בקרוב") : null),
       h("div.fr-what", null, what),
@@ -719,7 +721,7 @@
       switch (fl.group) {
         case "month": { const d = parseISO(x.date); return [x.date.slice(0, 7), `${MONTHS[d.getMonth()]} ${d.getFullYear()}`, 0]; }
         case "week": { const sun = sundayOf(x.date); return [sun, `שבוע ${dm(sun)}–${dm(addDays(sun, 5))}`, 0]; }
-        case "day": return [x.date, `${dayName(x.date)} ${dm(x.date)}`, 0];
+        case "day": { const hp = heb(parseISO(x.date)); return [x.date, `${dayName(x.date)} ${dm(x.date)}${hp ? ` · ${hp.day} ב${hp.month}` : ""}`, 0]; }
         case "cls": return [x.classes || "—", x.classes || "ללא כיתה", 1];
         case "who": return [x.instead || "—", x.instead ? `במקום ${x.instead}` : "ללא מורה נעדר", 1];
         default: return [String(x.hour), `שעה ${x.hour}`, 2];

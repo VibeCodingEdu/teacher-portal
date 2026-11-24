@@ -279,3 +279,5 @@ button.stat:active { transform: scale(.97); }
 .fr-fix { justify-self: start; font-size: .8rem; padding: 2px 0; }
 .tag.soon { background: var(--marker); }
 @media (prefers-reduced-motion: reduce) { .group summary::after { transition: none; } }
+
+.fr-heb { color: var(--muted) !important; }
