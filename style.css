@@ -254,3 +254,28 @@ button.stat:active { transform: scale(.97); }
 .status-line.ok { background: color-mix(in srgb, var(--done) 13%, transparent); color: var(--done); }
 .status-line.bad { background: color-mix(in srgb, var(--bad) 13%, transparent); color: var(--bad); }
 .status-line .btn.small { padding: 4px 10px; font-size: .85rem; flex: none; }
+
+/* ── tabs and the covered-lessons page ─────────────────────────────── */
+.tabs { display: flex; gap: 6px; margin: 14px 0 6px; padding: 4px; background: var(--rule); border-radius: 14px; }
+.tab { flex: 1; border: 0; background: transparent; border-radius: 11px; padding: 9px 6px; font-weight: 600; color: var(--ink-2); }
+.tab.on { background: var(--sheet); color: var(--ink); box-shadow: var(--shadow); }
+.groups { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.glead { color: var(--ink-2); font-size: .92rem; margin: 6px 2px; }
+.glead b { color: var(--accent); font-family: var(--display); font-size: 1.1rem; }
+.group { background: var(--sheet); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; }
+.group summary { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 13px 16px; cursor: pointer; list-style: none; font-weight: 600; }
+.group summary::-webkit-details-marker { display: none; }
+.group summary::after { content: "‹"; transition: transform .2s; color: var(--muted); margin-inline-start: 4px; }
+.group[open] summary::after { transform: rotate(-90deg); }
+.group summary .count { margin-inline-start: auto; font-weight: 500; color: var(--accent); font-size: .92rem; }
+.glist { border-top: 1px solid var(--rule); padding: 4px 16px 8px; }
+.frow2 { padding: 10px 0; border-bottom: 1px dashed var(--rule); display: grid; gap: 2px; }
+.frow2:last-child { border-bottom: 0; }
+.frow2.future { opacity: .85; }
+.fr-top { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.fr-top span { color: var(--ink-2); font-size: .92rem; }
+.fr-what { font-size: .95rem; }
+.fr-inst { color: var(--muted); font-size: .85rem; }
+.fr-fix { justify-self: start; font-size: .8rem; padding: 2px 0; }
+.tag.soon { background: var(--marker); }
+@media (prefers-reduced-motion: reduce) { .group summary::after { transition: none; } }

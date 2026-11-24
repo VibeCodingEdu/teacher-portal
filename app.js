@@ -279,6 +279,7 @@
     put($("#main"), 
       h("h1", null, "שלום, ", h("span.accent", null, teacher || "")),
       h("p.lead", null, "ההיעדרויות שלך מתחילת שנת הלימודים"),
+      tabsBar("abs"),
       h("button.btn.primary.wide", { on: { click: () => showForm() } }, "+ דיווח היעדרות"),
       body);
     let r;
@@ -365,7 +366,7 @@
     const [label, tone] = fixStatus(f);
     return h("div.fix", null,
       h("div.fix-top", null, h("span.tag", { class: tone }, label),
-        f.date ? h("span", null, `היעדרות ב${dayName(f.date)} ${dm(f.date)}`) : null,
+        f.date ? h("span", null, `${(f.text || "").startsWith("[מילוי מקום") ? "מילוי מקום" : "היעדרות"} ב${dayName(f.date)} ${dm(f.date)}`) : null,
         h("span.muted", null, f.at)),
       h("div.fix-text", null, f.text),
       f.answer ? h("div.fix-answer", null, h("b", null, "תשובת המשרד: "), f.answer) : null);
@@ -629,13 +630,14 @@
       ["לא", null, ""]]);
   }
 
-  function showFix(x) {
+  function showFix(x, ctx) {
     onHome = false;
+    const back = ctx ? showFills : showHome;
     const text = h("textarea.input", { placeholder: "למשל: הייתי רק עד שעה 4, או: לא נעדרתי ביום הזה", maxlength: "500" });
     const err = h("p.error");
     const send = h("button.btn.primary.wide", { type: "button", on: { click: async () => {
       if (!text.value.trim()) { err.textContent = "כתוב מה צריך לתקן"; return; }
-      const draft = { at: "", date: x.from, text: text.value.trim(), status: "", answer: "" };
+      const draft = { at: "", date: ctx ? ctx.date : x.from, text: (ctx ? ctx.prefix : "") + text.value.trim(), status: "", answer: "" };
       const card = h("div", null, fixCard({ ...draft, status: "שולח…" }));
       const line = statusLine();
       onHome = false;
@@ -644,20 +646,113 @@
         h("h1", null, "הבקשה ", h("span.accent", null, "נשלחה")),
         h("div.page", null, card, line,
           h("p.next", null, "הבקשה מגיעה לרכז ההיעדרויות. כשיטפלו בה, הסטטוס כאן יתעדכן ל\"טופלה\", ואם תהיה תשובה, תראה אותה כאן."),
-          h("button.btn.primary.wide", { type: "button", on: { click: showHome } }, "לדף שלי")));
+          h("button.btn.primary.wide", { type: "button", on: { click: back } }, "לדף שלי")));
       let sent = false;
       background("שולח את הבקשה", async () => {
         if (sent) return;
-        const r = await call("fix", { absenceId: x.absenceId, date: x.from, text: draft.text });
+        const r = await call("fix", { absenceId: ctx ? "" : x.absenceId, date: draft.date, text: draft.text });
         sent = true;
         put(card, fixCard(r.fix || { ...draft, status: "חדש" }));
       }, { line, okText: "✓ הבקשה נשלחה ונמצאת בטיפול. אפשר לסגור את הדף" });
     } } }, "שליחת הבקשה");
     put($("#main"), 
       h("h1", null, "בקשה ", h("span.accent", null, "למשרד")),
-      h("p.lead", null, `היעדרות ביום ${dayName(x.from)} ${dm(x.from)}, ${hoursText(x.fromHour, x.toHour)}. הבקשה תגיע למזכירות ולרכז ההיעדרויות.`),
+      h("p.lead", null, ctx ? ctx.lead : `היעדרות ביום ${dayName(x.from)} ${dm(x.from)}, ${hoursText(x.fromHour, x.toHour)}. הבקשה תגיע למזכירות ולרכז ההיעדרויות.`),
       h("div.page", null, h("div.field", null, h("label.label", null, "מה צריך לשנות?"), text), send, err,
-        h("div.row", { style: "justify-content:center;margin-top:8px" }, h("button.btn.link", { type: "button", on: { click: showHome } }, "חזרה"))));
+        h("div.row", { style: "justify-content:center;margin-top:8px" }, h("button.btn.link", { type: "button", on: { click: back } }, "חזרה"))));
+  }
+
+  // ── covered lessons ("מילויי מקום") ────────────────────────────────────
+  const fl = { group: "month", type: "", when: "", cls: "", who: "" };
+  const sundayOf = s => addDays(s, -parseISO(s).getDay());
+  const GROUPS = [["month", "חודש"], ["week", "שבוע"], ["day", "יום"], ["cls", "כיתה"], ["who", "במקום מי"], ["hour", "שעה"]];
+
+  function tabsBar(active) {
+    return h("nav.tabs", { role: "tablist" }, [["abs", "ההיעדרויות שלי", showHome], ["fills", "מילויי מקום", showFills]].map(([k, t, fn]) =>
+      h("button.tab", { type: "button", role: "tab", "aria-selected": active === k ? "true" : "false", class: active === k ? "on" : "",
+        on: { click: () => { if (active !== k) fn(); } } }, t)));
+  }
+
+  function fillRow(x, today) {
+    const future = x.date > today;
+    const what = [x.classes, x.subject].filter(Boolean).join(" · ") || "שיעור";
+    const ctx = { date: x.date, lead: `מילוי מקום ביום ${dayName(x.date)} ${dm(x.date)}, שעה ${x.hour}. הבקשה תגיע למזכירות ולרכז ההיעדרויות.`,
+      prefix: `[מילוי מקום ${dm(x.date)} שעה ${x.hour}${x.classes ? ", " + x.classes : ""}] ` };
+    return h("div.frow2", { class: future ? "future" : "" },
+      h("div.fr-top", null, h("b", null, `${dayName(x.date)} ${dm(x.date)}`), h("span", null, `שעה ${x.hour}`),
+        x.type === "שעה נוספת" ? h("span.tag", null, "שעה נוספת") : null,
+        future ? h("span.tag.soon", null, "בקרוב") : null),
+      h("div.fr-what", null, what),
+      x.instead ? h("div.fr-inst", null, "במקום ", x.instead) : null,
+      h("button.btn.link.fr-fix", { type: "button", on: { click: () => showFix(null, ctx) } }, "יש טעות?"));
+  }
+
+  async function showFills() {
+    onHome = true;
+    setWho();
+    const body = h("div", null, loading("טוען את המילויים שלך…"));
+    put($("#main"),
+      h("h1", null, "שלום, ", h("span.accent", null, teacher || "")),
+      h("p.lead", null, "השעות שמילאת מקום מתחילת שנת הלימודים"),
+      tabsBar("fills"), body);
+    let r;
+    try { r = await call("myFills"); } catch (ex) { put(body, h("div.empty", null, ex.message)); return; }
+    const all = (r.rows || []).slice().sort((a, b) => b.date.localeCompare(a.date) || b.hour - a.hour);
+    const today = r.today || todayISO();
+    if (!all.length) {
+      put(body, h("div.empty", null, "עוד לא רשומות לך שעות מילוי מקום השנה."),
+        r.synced ? h("div.synced", null, `המצב במערכת עודכן לאחרונה: ${r.synced}`) : null);
+      return;
+    }
+    const done = all.filter(x => x.date <= today);
+    const month = today.slice(0, 7);
+    const stats = h("div.stats", null,
+      h("div.stat", null, h("b", null, done.length), h("span", null, "שעות השנה")),
+      h("div.stat", null, h("b", null, done.filter(x => x.date.startsWith(month)).length), h("span", null, "החודש")),
+      h("div.stat", null, h("b", null, all.length - done.length), h("span", null, "קרובות")));
+    const uniq = k => [...new Set(all.map(x => x[k]).filter(Boolean))].sort((a, b) => a.localeCompare(b, "he"));
+    const classes = uniq("classes"), whos = uniq("instead");
+    const types = [...new Set(all.map(x => x.type))];
+    const bar = h("div.filters"), list = h("div.groups");
+
+    function groupOf(x) {
+      switch (fl.group) {
+        case "month": { const d = parseISO(x.date); return [x.date.slice(0, 7), `${MONTHS[d.getMonth()]} ${d.getFullYear()}`, 0]; }
+        case "week": { const sun = sundayOf(x.date); return [sun, `שבוע ${dm(sun)}–${dm(addDays(sun, 5))}`, 0]; }
+        case "day": return [x.date, `${dayName(x.date)} ${dm(x.date)}`, 0];
+        case "cls": return [x.classes || "—", x.classes || "ללא כיתה", 1];
+        case "who": return [x.instead || "—", x.instead ? `במקום ${x.instead}` : "ללא מורה נעדר", 1];
+        default: return [String(x.hour), `שעה ${x.hour}`, 2];
+      }
+    }
+    function paint() {
+      const sel = (label, key, opts) => opts.length < 2 ? null : h("div.frow", null, h("span.flabel", null, label),
+        h("select.input.month-sel", { "aria-label": label, on: { change: e => { fl[key] = e.target.value; paint(); } } },
+          h("option", { value: "" }, "הכל"), opts.map(o => h("option", { value: o, selected: fl[key] === o }, o))));
+      put(bar,
+        h("div.frow", null, h("span.flabel", null, "סיכום לפי"), h("div.chips", null, GROUPS.map(([k, t]) =>
+          h("button.chip", { type: "button", class: fl.group === k ? "on" : "", on: { click: () => { fl.group = k; paint(); } } }, t)))),
+        h("div.frow", null, h("span.flabel", null, "מתי"), h("div.chips", null, [["", "הכל"], ["past", "שהיו"], ["soon", "קרובות"]].map(([k, t]) =>
+          h("button.chip", { type: "button", class: fl.when === k ? "on" : "", on: { click: () => { fl.when = k; paint(); } } }, t)))),
+        types.length > 1 ? h("div.frow", null, h("span.flabel", null, "סוג"), h("div.chips", null, [["", "הכל"], ...types.map(t => [t, t])].map(([k, t]) =>
+          h("button.chip", { type: "button", class: fl.type === k ? "on" : "", on: { click: () => { fl.type = k; paint(); } } }, t)))) : null,
+        sel("כיתה", "cls", classes), sel("במקום מי", "who", whos));
+      const rows = all.filter(x => (!fl.type || x.type === fl.type) && (!fl.cls || x.classes === fl.cls) && (!fl.who || x.instead === fl.who)
+        && (!fl.when || (fl.when === "past" ? x.date <= today : x.date > today)));
+      const groups = new Map();
+      rows.forEach(x => { const [k, label, mode] = groupOf(x); (groups.get(k) || groups.set(k, { k, label, mode, rows: [] }).get(k)).rows.push(x); });
+      const arr = [...groups.values()];
+      arr.sort((a, b) => a.mode === 0 ? b.k.localeCompare(a.k) : a.mode === 2 ? Number(a.k) - Number(b.k) : b.rows.length - a.rows.length || a.label.localeCompare(b.label, "he"));
+      put(list,
+        h("div.glead", null, h("b", null, rows.length), " שעות במסנן הנוכחי"),
+        ...(arr.length ? arr.map(g => h("details.group", null,
+          h("summary", null, h("span", null, g.label), h("span.count", null, `${g.rows.length} ${g.rows.length === 1 ? "שעה" : "שעות"}`)),
+          h("div.glist", null, g.rows.map(x => fillRow(x, today))))) : [h("div.empty", null, "אין שעות שמתאימות לסינון")]));
+    }
+    paint();
+    put(body, stats, bar, list,
+      h("p.synced", null, "הנתונים לקוחים ממערכת שוטף. אם משהו לא נראה נכון, לחץ על \"יש טעות?\" ליד השורה."),
+      r.synced ? h("div.synced", null, `המצב במערכת עודכן לאחרונה: ${r.synced}`) : null);
   }
 
   // ── demo data (?demo=1) ──────────────────────────────────────────────
@@ -676,6 +771,13 @@
     if (action === "mine") return { ok: true, teacher: "ישראל ישראלי", items: demoItems, synced: "15/11/2026 19:40", today: T,
       fixes: [{ at: "10/11/2026 08:12", date: addDays(T, -45), text: "הייתי רק עד שעה 6", status: "טופל", answer: "תוקן, השעות עודכנו" },
               { at: "15/11/2026 18:30", date: nextSchoolDay(addDays(T, 3)), text: "לא נעדרתי בשעה 6", status: "נשלח למנדי", answer: "" }] };
+    if (action === "myFills") return { ok: true, today: T, synced: "15/11/2026 19:40", rows: [
+      { id: "1", date: addDays(T, -2), hour: 3, classes: "ד1", subject: "חומש", instead: "כהן לוי", type: "מילוי מקום" },
+      { id: "2", date: addDays(T, -2), hour: 4, classes: "ד1", subject: "חשבון", instead: "כהן לוי", type: "מילוי מקום" },
+      { id: "3", date: addDays(T, -9), hour: 2, classes: "ה2", subject: "אנגלית", instead: "ברק דוד", type: "מילוי מקום" },
+      { id: "4", date: addDays(T, -20), hour: 6, classes: "ו1", subject: "גמרא", instead: "", type: "שעה נוספת" },
+      { id: "5", date: addDays(T, -45), hour: 1, classes: "ד1", subject: "חומש", instead: "כהן לוי", type: "מילוי מקום" },
+      { id: "6", date: addDays(T, 2), hour: 5, classes: "ה2", subject: "הלכה", instead: "ברק דוד", type: "מילוי מקום" }] };
     if (action === "noteFile") return { ok: true, name: "ישראלי 3.11.png", mime: "image/png",
       data: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==" };
     if (action === "fix") return { ok: true, fix: { at: "15/11/2026 19:45", date: body.date, text: body.text, status: "חדש", answer: "" } };
