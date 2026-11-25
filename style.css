@@ -305,3 +305,11 @@ button.stat:active { transform: scale(.97); }
 /* the office view: whose absence */
 .slip-who { font-weight: 800; color: var(--ink); font-size: 1rem; margin-bottom: 2px; }
 .input.code { -webkit-text-security: disc; text-security: disc; text-align: left; }
+/* picking a substitute */
+.modal.picker { max-height: 82vh; display: flex; flex-direction: column; }
+.pick-list { overflow: auto; margin: 4px 0 10px; }
+.pick-head { font-size: .8rem; color: var(--muted); margin: 12px 0 4px; }
+.pick-item { display: flex; justify-content: space-between; align-items: center; gap: 10px; width: 100%; padding: 13px 8px;
+  border: 0; border-bottom: 1px solid var(--line); background: none; font: inherit; color: inherit; text-align: start; cursor: pointer; }
+.pick-item:disabled { opacity: .4; cursor: default; }
+.pick-item:active:not(:disabled) { background: rgba(0,0,0,.04); }
