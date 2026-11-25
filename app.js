@@ -65,6 +65,35 @@
     const t = $("#toast"); t.textContent = msg; t.className = "toast" + (bad ? " bad" : "");
     clearTimeout(toastT); toastT = setTimeout(() => t.classList.add("hidden"), bad ? 6000 : 3200);
   }
+  // ── the look: follow the system, or light, or dark (one icon button, shared with "היומן שלי") ──
+  const THEME_LABEL = { auto: "מצב תצוגה: לפי המערכת", light: "מצב תצוגה: בהיר", dark: "מצב תצוגה: כהה" };
+  const THEME_PATH = {
+    auto: '<rect x="3.5" y="4.5" width="17" height="12" rx="2"/><path d="M9 20h6M12 16.5V20"/>',
+    light: '<circle cx="12" cy="12" r="4"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M18.4 5.6 17 7M7 17l-1.4 1.4"/>',
+    dark: '<path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/>',
+  };
+  function themeMode() { try { const t = localStorage.getItem("diaryTheme"); return t === "light" || t === "dark" ? t : "auto"; } catch (e) { return "auto"; } }
+  function applyTheme(mode) {
+    const root = document.documentElement;
+    if (mode === "light" || mode === "dark") root.dataset.theme = mode; else delete root.dataset.theme;
+    const btn = $("#themeBtn");
+    if (btn) {
+      const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      svg.setAttribute("viewBox", "0 0 24 24"); svg.setAttribute("aria-hidden", "true"); svg.innerHTML = THEME_PATH[mode];
+      btn.replaceChildren(svg); btn.setAttribute("aria-label", THEME_LABEL[mode]); btn.title = THEME_LABEL[mode];
+    }
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute("content", getComputedStyle(document.body).backgroundColor);
+    const fr = document.querySelector("iframe.dy-frame");       // the embedded diary follows at once
+    if (fr && fr.contentWindow) { try { fr.contentWindow.postMessage({ theme: mode }, location.origin); } catch (e) { /* not ready */ } }
+  }
+  $("#themeBtn").addEventListener("click", () => {
+    const order = ["auto", "light", "dark"], next = order[(order.indexOf(themeMode()) + 1) % 3];
+    try { next === "auto" ? localStorage.removeItem("diaryTheme") : localStorage.setItem("diaryTheme", next); } catch (e) { /* private mode */ }
+    applyTheme(next);
+  });
+  if (window.matchMedia) matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => applyTheme(themeMode()));
+  applyTheme(themeMode());
   const loading = (txt = "טוען…") => h("div.loading", null, h("div.spinner"), txt);
   const store = {
     get(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } },

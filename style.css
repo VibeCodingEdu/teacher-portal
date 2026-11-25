@@ -9,7 +9,7 @@
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --paper: #121a16; --sheet: #1a2620; --ink: #ebe8de; --ink-2: #c4c6bd; --muted: #8b958d;
     --rule: rgba(235, 232, 222, .08); --line: rgba(235, 232, 222, .14); --margin: rgba(232, 140, 120, .6);
     --accent: #e9d27c; --marker: rgba(233, 210, 124, .22); --done: #8fd3a5; --todo: #f0a85c; --bad: #f08a7a;
@@ -17,6 +17,14 @@
     color-scheme: dark;
   }
 }
+:root[data-theme="dark"] {
+    --paper: #121a16; --sheet: #1a2620; --ink: #ebe8de; --ink-2: #c4c6bd; --muted: #8b958d;
+    --rule: rgba(235, 232, 222, .08); --line: rgba(235, 232, 222, .14); --margin: rgba(232, 140, 120, .6);
+    --accent: #e9d27c; --marker: rgba(233, 210, 124, .22); --done: #8fd3a5; --todo: #f0a85c; --bad: #f08a7a;
+    --shadow: 0 1px 0 rgba(0,0,0,.25), 0 14px 34px -20px rgba(0,0,0,.8);
+    color-scheme: dark;
+  }
+
 * { box-sizing: border-box; }
 html, body { margin: 0; }
 body {
@@ -328,3 +336,8 @@ button.stat:active { transform: scale(.97); }
 /* ── my diary: the owner's diary, inside the page ─────────────────── */
 main.wide { max-width: 1400px; }
 .dy-frame { display: block; width: 100%; border: 0; height: calc(100dvh - 150px); min-height: 560px; background: transparent; }
+
+/* the look choice: one icon in the header */
+.top .icon-btn { width: 36px; height: 36px; display: inline-grid; place-items: center; border-radius: 999px; border: 1px solid var(--line); background: transparent; color: var(--ink); flex: none; }
+.top .icon-btn svg { width: 18px; height: 18px; }
+.top .icon-btn:hover { border-color: var(--ink-2); }

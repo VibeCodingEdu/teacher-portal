@@ -58,6 +58,7 @@
     trash: '<path d="M5 7h14M10 7V4.5h4V7M7 7l1 12h8l1-12M10.5 11v5M13.5 11v5"/>',
     check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>',
     download: '<path d="M12 4v11M7.5 10.5 12 15l4.5-4.5M5 19h14"/>',
+    note: '<path d="M6 3.5h9l3.5 3.5v13.5H6z"/><path d="M14.5 3.5V7.5H18.5M9 12h6.5M9 15.5h6.5"/>',
   };
   function icon(name) {
     const el = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -160,6 +161,11 @@
     if (u.pathname === "/api/auth") return { ok: true };
     if (u.pathname === "/api/week") return dyCall("week", { date: q.get("date") });
     if (u.pathname === "/api/lesson") return post ? dyCall("save", { url: opts.body.url, draft: opts.body.draft }) : dyCall("lesson", { url: q.get("url") });
+    if (u.pathname === "/api/notes") {
+      if (!post) return dyCall("notes", { url: q.get("url") });
+      const b = opts.body, op = { add: "noteAdd", set: "noteSet", delete: "noteDelete" }[b.op];
+      return dyCall(op, { url: b.url, pupil: b.pupil, draft: b.draft, id: b.id, changes: b.changes });
+    }
     if (u.pathname === "/api/event") return post ? dyCall("eventSave", { url: opts.body.url, draft: opts.body.draft }) : dyCall("event", { url: q.get("url") });
     throw new Error("זה לא זמין ביומן האישי");
   }
@@ -222,6 +228,8 @@
     applyTheme(next);
   });
   if (window.matchMedia) matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => applyTheme(themeMode()));
+  window.addEventListener("storage", e => { if (e.key === "diaryTheme") applyTheme(themeMode()); });                     // changed in another tab or the page around
+  window.addEventListener("message", e => { if (e.origin === location.origin && e.data && e.data.theme) applyTheme(e.data.theme); });
   function loading(text = "טוען…") { return h("div.loading", null, h("div.spinner"), text); }
 
   // ── calendar picker ─────────────────────────────────────────────────
@@ -754,6 +762,118 @@
 
     // students
     const list = h("div");
+
+    // Tracking notes (הערות מעקב) of this class: read in the background; every change is shown at once
+    // and sent behind the scenes (undone, with a message, only if סמארט סקול refuses).
+    const trk = { data: null, err: false, q: Promise.resolve() };
+    const paints = [];
+    const pupilOf = s => trk.data && trk.data.pupils.find(p => p.id === s.sid);
+    const noteCount = s => { const p = pupilOf(s); return p ? p.notes.length : 0; };
+    const repaintAll = () => paints.forEach(f => f());
+    api(`/api/notes?url=${encodeURIComponent(url)}`).then(r => { trk.data = r; repaintAll(); })
+      .catch(() => { trk.err = true; repaintAll(); });
+    const heDate = iso => { const [y, m, d] = iso.split("-"); return `${d}/${m}/${y}`; };
+    function noteCall(body) { return api("/api/notes", { method: "POST", body: { url, ...body } }); }
+    function noteChange(apply, call, okMsg) {
+      const snap = JSON.stringify(trk.data);
+      apply(); repaintAll();
+      trk.q = trk.q.then(() => call()).then(r => { trk.data = r; repaintAll(); if (okMsg) toast(okMsg); })
+        .catch(err => { trk.data = JSON.parse(snap); repaintAll(); toast("לא נשמר: " + err.message, true); });
+    }
+
+    function openNotes(s) {
+      const pu0 = pupilOf(s);
+      if (!pu0) { toast(trk.err ? "לא הצלחתי לקרוא את הערות המעקב" : "הערות המעקב עוד נטענות", true); return; }
+      const O = trk.data.options;
+      const veil = h("div.nt-veil"), box = h("div.nt-box", { role: "dialog", "aria-label": "הערות מעקב" });
+      veil.append(box); document.body.append(veil);
+      const onKey = e => { if (e.key === "Escape") { e.stopPropagation(); close(); } };
+      function close() { veil.remove(); document.removeEventListener("keydown", onKey, true); const i = paints.indexOf(paintNotes); if (i >= 0) paints.splice(i, 1); }
+      document.addEventListener("keydown", onKey, true);
+      veil.addEventListener("pointerdown", e => { if (e.target === veil) close(); });
+
+      const list2 = h("div.nt-list");
+      const pOf = () => pupilOf(s) || { notes: [], publishable: false };
+      function noteCard(n) {
+        const pr = (O.priorities.find(p => String(p.id) === String(n.priority)) || {}).label || "";
+        const acts = h("div.nt-acts");
+        if (!n.pending && n.canEdit) acts.append(h("button.btn.small", { type: "button", on: { click: () =>
+          noteChange(() => { n.taken = !n.taken; }, () => noteCall({ op: "set", id: n.id, changes: { taken: !n.taken } }), n.taken ? null : "✓ סומנה כטופלה") } },
+          n.taken ? "בטל סימון טופל" : "סמן כטופל"));
+        if (!n.pending && n.publishable && !n.private) acts.append(h("button.btn.small", { type: "button", on: { click: () =>
+          noteChange(() => { n.public = !n.public; }, () => noteCall({ op: "set", id: n.id, changes: { public: !n.public } })) } },
+          n.public ? "הסר חשיפה להורים" : "חשוף להורים"));
+        if (!n.pending && n.canDelete) acts.append(h("button.btn.small.danger", { type: "button", on: { click: () => {
+          if (!confirm("למחוק את ההערה? אי אפשר לשחזר.")) return;
+          noteChange(() => { const p = pOf(); p.notes = p.notes.filter(x => x.id !== n.id); }, () => noteCall({ op: "delete", id: n.id }), "✓ נמחקה");
+        } } }, "מחיקה"));
+        return h("div.nt-card", { class: n.pending ? "pending" : "" },
+          h("div.nt-text", null, n.text),
+          h("div.nt-meta", null,
+            n.taken ? h("span.nt-tag.done", null, "טופל") : h("span.nt-tag", null, "לא טופל"),
+            pr ? h("span.nt-tag", { class: n.priority >= 2 ? "hi" : "" }, "עדיפות " + pr) : null,
+            n.treatment ? h("span.nt-tag", null, n.treatment) : null,
+            n.public ? h("span.nt-tag.hi", null, "חשוף להורים") : null,
+            n.private ? h("span.nt-tag", null, "פרטית") : null,
+            n.files ? h("span.nt-tag", null, `${n.files} קבצים`) : null),
+          h("div.nt-sub", null, [n.teacher, n.updated].filter(Boolean).join(" · ")),
+          acts.children.length ? acts : null);
+      }
+      function paintNotes() {
+        const ns = pOf().notes;
+        put(list2, ns.length ? ns.map(noteCard) : h("div.nt-empty", null, "אין עדיין הערות מעקב לתלמיד"));
+      }
+      paints.push(paintNotes);
+
+      // new note
+      const text = h("textarea", { placeholder: "מה קרה, ומה נעשה", maxlength: "1500", rows: "3" });
+      const treat = h("select", null, h("option", { value: "0" }, "ללא סוג טיפול"), O.treatments.map(t => h("option", { value: t.id }, t.label)));
+      const prio = h("select", null, O.priorities.map(p => h("option", { value: p.id }, p.label)));
+      const day = h("input", { type: "date", value: todayISO() });
+      const priv = h("input", { type: "checkbox" }), pub = h("input", { type: "checkbox" });
+      const share = [];
+      const shareChips = h("div.chips");
+      const shareSel = h("select", null, h("option", { value: "" }, "שיתוף עם מורה…"), O.teachers.map(t => h("option", { value: t.id }, t.name)));
+      function paintShare() {
+        put(shareChips, share.map(id => h("button.chip.on", { type: "button", title: "הסרה", on: { click: () => { share.splice(share.indexOf(id), 1); paintShare(); } } },
+          (O.teachers.find(t => t.id === id) || {}).name || id)));
+      }
+      shareSel.addEventListener("change", () => { if (shareSel.value && !share.includes(shareSel.value)) { share.push(shareSel.value); paintShare(); } shareSel.value = ""; });
+      priv.addEventListener("change", () => { if (priv.checked) pub.checked = false; pub.disabled = priv.checked; });
+      const saveBtn = h("button.btn.primary", { type: "button", on: { click: () => {
+        const t = text.value.trim();
+        if (!t) { toast("כתוב את תוכן ההערה", true); text.focus(); return; }
+        if (!day.value) { toast("בחר תאריך", true); return; }
+        const draft = { text: t, date: heDate(day.value), hour: 0, minute: 0, treatmentId: treat.value, priority: Number(prio.value),
+          private: priv.checked, public: pub.checked && !priv.checked, teacherIds: share.slice() };
+        const tr = O.treatments.find(x => x.id === treat.value);
+        noteChange(() => { pOf().notes.push({ id: "tmp" + Date.now(), text: t, teacher: "", updated: "נשמרת…", treatment: tr ? tr.label : "",
+          priority: draft.priority, taken: false, files: 0, private: draft.private, public: draft.public, pending: true }); },
+          () => noteCall({ op: "add", pupil: s.sid, draft }), "✓ ההערה נשמרה בסמארט סקול");
+        toast("ההערה נשמרת…");
+        close();
+      } } }, "שמירת הערה");
+      box.append(
+        h("div.nt-head", null, h("h3", null, "הערות מעקב"), h("span.muted", null, s.name),
+          h("button.icon-btn.close", { type: "button", "aria-label": "סגירה", on: { click: close } }, icon("close"))),
+        h("div.nt-body", null,
+          list2,
+          h("div.nt-new", null,
+            h("h4", null, "הערה חדשה"),
+            h("div.field", null, text),
+            h("div.nt-row", null,
+              h("div.field", null, h("label", null, "סוג טיפול"), treat),
+              h("div.field", null, h("label", null, "עדיפות"), prio),
+              h("div.field", null, h("label", null, "תאריך יעד"), day)),
+            h("div.field", null, shareSel, shareChips),
+            h("div.nt-checks", null,
+              h("label.check", null, priv, " הערה פרטית"),
+              pOf().publishable ? h("label.check", null, pub, " חשיפה להורים ולתלמיד") : null),
+            h("div.nt-foot", null, saveBtn))));
+      paintNotes();
+      setTimeout(() => text.focus(), 50);
+    }
+
     function studentRow(s, i) {
       const row = h("div.stu");
       function paint() {
@@ -798,8 +918,14 @@
             on ? h("label.just-note", null, h("span", null, "הערה להצדקה (לא חובה)"),
               h("input", { type: "text", maxlength: "250", value: draft.justify[k], on: { input: e => { draft.justify[k] = e.target.value; } } })) : null);
         })) : null;
-        row.replaceChildren(...[h("div.stu-top", null, h("span.stu-num", null, i + 1), h("span.stu-name", null, s.name)), chips, justRow, note].filter(Boolean));
+        const nn = noteCount(s);
+        const noteBtn = trk.err ? null : h("button.note-btn", {
+          type: "button", class: nn ? "has" : "", disabled: !trk.data,
+          title: nn ? `הערות מעקב (${nn})` : "הערת מעקב", "aria-label": nn ? `הערות מעקב, ${nn}` : "הערת מעקב",
+          on: { click: () => openNotes(s) } }, icon("note"), nn ? h("span.note-n", null, nn) : null);
+        row.replaceChildren(...[h("div.stu-top", null, h("span.stu-num", null, i + 1), h("span.stu-name", null, s.name), noteBtn), chips, justRow, note].filter(Boolean));
       }
+      paints.push(paint);
       paint();
       return row;
     }
