@@ -98,7 +98,9 @@
     else {
       if (!CFG.scriptUrl) throw new Error("הדף עוד לא מחובר לגיליון");
       // text/plain keeps this a "simple" request, so Apps Script answers without CORS trouble.
-      const res = await fetch(CFG.scriptUrl, { method: "POST", body: JSON.stringify({ action, token, ...body }) });
+      const payload = JSON.stringify({ action, token, ...body });
+      // keepalive: the browser finishes a small request even if the page is closed meanwhile
+      const res = await fetch(CFG.scriptUrl, { method: "POST", body: payload, keepalive: payload.length < 60000 });
       data = await res.json();
     }
     if (!data.ok && data.error === "expired") { logout(); throw new Error("צריך להזדהות שוב"); }
@@ -224,6 +226,67 @@
     }
   }
 
+  // ── actions in the background ───────────────────────────────────────
+  // The window closes at once. The item shows "⏳" in its list until the sheet confirms, and the
+  // list refreshes by itself. If the page is closed before the save finished, the browser asks
+  // first; and what was not confirmed waits in the "outbox" and is offered again on the next visit.
+  const pendingOps = [];
+  let flash = null;      // a one-time note on the next home screen
+  const outbox = {
+    all() { return (pref.get("outbox") || []).filter(x => Date.now() - x.at < 2 * 86400e3); },
+    add(x) { pref.set("outbox", [...this.all(), x]); },
+    del(id) { pref.set("outbox", this.all().filter(y => y.id !== id)); },
+  };
+  const sameItem = (x, p) => (p.row && x.kind === "report" && Number(x.row) === Number(p.row)) || (p.absenceId && String(x.absenceId) === String(p.absenceId));
+  /** Show what is on its way: new items on top, changed or canceled ones marked. */
+  function applyPending(items) {
+    const list = items.map(x => ({ ...x }));     // copies: what the server sent is never changed
+    for (const p of pendingOps) {
+      if (p.kind === "new") list.unshift({ ...p.item, pending: p.label });
+      else { const x = list.find(y => sameItem(y, p)); if (x) Object.assign(x, p.item || {}, { pending: p.label }); }
+    }
+    return list;
+  }
+  function pendingCard(x) {
+    const d1 = parseISO(x.from), range = x.to && x.to !== x.from;
+    return h("div.slip.pending", null,
+      x.display ? h("div.slip-who", null, x.display) : null,
+      h("div.slip-top", null,
+        h("div.slip-date", null, `${dayName(x.from)}, `, h("span.num", null, d1.getDate()), ` ב${MONTHS[d1.getMonth()]}`,
+          range ? ` – ${dayName(x.to)} ${dm(x.to)}` : ""),
+        h("span.tag.wait", null, x.pending)),
+      h("div.slip-meta", null, h("span", null, hoursText(x.fromHour, x.toHour)), h("span", null, x.reason)));
+  }
+  /** op: what to show meanwhile. ob: what to keep in the outbox. work: the saving itself. */
+  function sendInBackground(op, ob, work, { label, okText, back, locked }) {
+    const id = "o" + Date.now() + Math.random().toString(36).slice(2, 6);
+    pendingOps.push(op);
+    if (ob) outbox.add({ id, teacher, act: ob.act, payload: ob.payload, label, at: Date.now() });
+    (back || showHome)();                        // the window closes now
+    background(label, async () => {
+      try { const r = await work(); if (ob) outbox.del(id); return r; }
+      catch (ex) {
+        if (ob) outbox.del(id);
+        if (ob && /כבר רשומה/.test(ex.message)) return null;      // it had arrived the first time
+        throw ex;
+      } finally { const i = pendingOps.indexOf(op); if (i >= 0) pendingOps.splice(i, 1); }
+    }, { okText, onFail: ex => {
+      if (/לפנות למזכירות/.test(ex.message) && locked) { lockedModal({ ...locked, lock: "" }); return; }
+      modal("לא נשמר", ex.message, [["לנסות שוב", () => sendInBackground(op, ob, work, { label, okText, back, locked }), "primary"], ["סגירה", null, ""]]);
+    } });
+  }
+  /** After a page that was closed in the middle of saving: offer to finish. */
+  function resumeOutbox() {
+    const mineLeft = outbox.all().filter(x => x.teacher === teacher);
+    if (!mineLeft.length || DEMO) return;
+    modal("פעולה שלא הושלמה", `בפעם הקודמת הדף נסגר לפני שהשמירה הסתיימה: ${mineLeft.map(x => x.label).join(", ")}. לשלוח עכשיו?`, [
+      ["כן, לשלוח", () => mineLeft.forEach(x => background(x.label, async () => {
+        try { await call(x.act, x.payload); } catch (ex) { if (!/כבר רשומה/.test(ex.message)) throw ex; }
+        outbox.del(x.id);
+      }, { okText: "✓ נשמר" })), "primary"],
+      ["לא, להסיר", () => mineLeft.forEach(x => outbox.del(x.id)), ""]]);
+  }
+
   // ── screens ──────────────────────────────────────────────────────────
   function setWho() {
     put($("#who"), ...(teacher ? [h("span", null, teacher), h("button", { on: { click: logout } }, "יציאה")] : []));
@@ -313,16 +376,20 @@
     onHome = true; onStaff = false;
     setWho();
     const body = h("div", null, loading("טוען את ההיעדרויות שלך…"));
+    const flashEl = flash ? h("div.flash", null, h("span", null, flash),
+      h("button.linkbtn", { type: "button", on: { click: e => e.currentTarget.parentNode.remove() } }, "✕")) : null;
+    flash = null;
     put($("#main"), 
       h("h1", null, "שלום, ", h("span.accent", null, teacher || "")),
       h("p.lead", null, "ההיעדרויות שלך מתחילת שנת הלימודים"),
       tabsBar("abs"),
+      flashEl,
       h("button.btn.primary.wide", { on: { click: () => showForm() } }, "+ דיווח היעדרות"),
       body);
     let r;
     try { r = await call("mine"); } catch (ex) { put(body, h("div.empty", null, ex.message)); return; }
     if (r.teacher && r.teacher !== teacher) { teacher = r.teacher; store.set("tp_teacher", teacher); setWho(); $("#main h1 .accent").textContent = teacher; }
-    mine = r.items || [];
+    mine = applyPending(r.items || []);
     fixes = r.fixes || [];
     office = !!r.office; store.set("tp_office", office ? "1" : "");
     const today = r.today || todayISO();
@@ -422,6 +489,7 @@
   }
 
   function slip(x) {
+    if (x.pending) return pendingCard(x);
     const range = x.to && x.to !== x.from;
     const d1 = parseISO(x.from), hp = heb(d1);
     const [label, tone] = x.kind === "office" ? ["נרשם במערכת", "ok"] : statusOf(x.status);
@@ -619,32 +687,29 @@
     const teacherField = ofc ? h("div.field", null, h("span.label", null, "מורה"), edit ? h("b", null, tdisp()) : tsel) : null;
     const err = h("p.error");
     const sendLabel = edit ? "שליחת השינוי" : "שליחת הדיווח";
-    const send = h("button.btn.primary.wide", { type: "button", on: { click: async () => {
+    const send = h("button.btn.primary.wide", { type: "button", on: { click: () => {
       err.textContent = "";
       if (to < from) { err.textContent = "\"עד תאריך\" מוקדם מ\"מתאריך\""; return; }
       if (ofc && !tname) { err.textContent = "בחר מורה"; return; }
       if (!ofc && !mgr.checked) { err.textContent = "לפני השליחה צריך לדבר עם המנהל ולסמן ✓"; mgrField.classList.add("shake"); setTimeout(() => mgrField.classList.remove("shake"), 500); return; }
       const body = { from, to, fromHour: full ? 1 : fh, toHour: full ? 10 : th, reason, note: details.value, managerOk: true };
       const withFile = !!(file && SICK.includes(reason)), f = file;
-      const line = statusLine();
-      showSent({ edit: !!edit, from, to, fromHour: body.fromHour, toHour: body.toHour, reason, note: body.note, file: withFile,
-                 back: ofc ? showStaff : showHome, ofc: !!ofc, who: ofc ? tdisp() : "" }, line);
+      const act = ofc ? (edit ? "oChange" : "oReport") : (edit ? "change" : "report");
+      const payload = ofc ? { ...body, teacher: tname, ...(edit ? { row: edit.row, absenceId: edit.absenceId } : {}) }
+        : (edit ? { ...body, row: edit.row } : body);
+      const item = { kind: "report", row: edit ? edit.row : null, teacher: tname || teacher, display: ofc ? tdisp() : "", from, to,
+        fromHour: body.fromHour, toHour: body.toHour, reason, note: body.note, status: "חדש", absenceId: edit ? edit.absenceId : "",
+        source: ofc ? "המשרד" : "המורה", subs: "", notes: [], hasNote: false, sick: SICK.includes(reason), lock: "" };
+      if (!ofc) flash = "הדיווח נשלח. לא לשכוח: לעדכן את המנהל, ואת רכז ההיעדרויות והמזכירות.";
       // In stages, so "try again" never sends the report twice.
       let row = edit ? edit.row : null, sent = false;
-      background(edit ? "שומר את השינוי" : "שולח את הדיווח", async ln => {
-        if (!sent) {
-          const act = ofc ? (edit ? "oChange" : "oReport") : (edit ? "change" : "report");
-          const payload = ofc ? { ...body, teacher: tname, ...(edit ? { row: edit.row, absenceId: edit.absenceId } : {}) }
-            : (edit ? { ...body, row: edit.row } : body);
-          const res = await call(act, payload);
-          sent = true; if (!edit) row = res.row;
-        }
-        if (withFile) {
-          ln.set("wait", "מעלה את אישור המחלה…");
-          await uploadNote({ kind: "report", row, absenceId: edit ? edit.absenceId : "", teacher: tname }, f, { office: !!ofc });
-        }
-      }, { line, okText: edit ? "✓ השינוי נשמר. אפשר לסגור את הדף" : "✓ הדיווח נשמר. אפשר לסגור את הדף",
-           onFail: ex => { if (/לפנות למזכירות/.test(ex.message)) lockedModal({ ...(edit || {}), lock: "" }); } });
+      sendInBackground({ kind: edit ? "change" : "new", row: edit ? edit.row : null, absenceId: edit ? edit.absenceId : "", item, label: edit ? "⏳ שומר את השינוי…" : "⏳ נשלח…" },
+        withFile ? null : { act, payload },     // a file is not kept for later: only the small request is
+        async () => {
+          if (!sent) { const res = await call(act, payload); sent = true; if (!edit) row = res.row; }
+          if (withFile) await uploadNote({ kind: "report", row, absenceId: edit ? edit.absenceId : "", teacher: tname }, f, { office: !!ofc });
+        }, { label: edit ? "שומר את השינוי" : "שולח את הדיווח", okText: edit ? "✓ השינוי נשמר" : "✓ הדיווח נשמר",
+             back: ofc ? showStaff : showHome, locked: edit });
     } } }, sendLabel);
     put($("#main"), 
       h("h1", null, edit ? "שינוי " : "דיווח ", h("span.accent", null, "היעדרות")),
@@ -683,13 +748,12 @@
     window.scrollTo(0, 0);
   }
 
-  async function cancel(x) {
+  function cancel(x) {
     const when = `${dayName(x.from)} ${dm(x.from)}`;
     modal("ביטול הדיווח", `לבטל את הדיווח על ${when}?`, [
-      ["כן, לבטל", async () => {
-        background("מבטל את הדיווח", () => call("cancel", { row: x.row }), { okText: "✓ הביטול נשלח. אפשר לסגור את הדף",
-          onFail: ex => { if (/לפנות למזכירות/.test(ex.message)) lockedModal({ ...x, lock: "" }); } });
-      }, "primary danger-fill"],
+      ["כן, לבטל", () => sendInBackground({ kind: "cancel", row: x.row, absenceId: x.absenceId, label: "⏳ מבטל…" },
+        { act: "cancel", payload: { row: x.row } }, () => call("cancel", { row: x.row }),
+        { label: "מבטל את הדיווח", okText: "✓ הדיווח בוטל", back: showHome, locked: x }), "primary danger-fill"],
       ["לא", null, ""]]);
   }
 
@@ -830,13 +894,12 @@
 
   // ── the office (המזכירות): the whole staff ───────────────────────────────
   let staff = { items: [], teachers: [], today: "", yearStart: "" };
-  const sf = Object.assign({ when: "soon", who: "", reason: "" }, pref.get("sf") || {});
+  const sf = Object.assign({ mode: "day", date: "", who: "", reason: "" }, pref.get("sf") || {});
   const subsN = x => Number(String(x.subs || "").split("/")[0]) || 0;
   /** "2/5": two of five lessons have a substitute. Needs one when some are missing. */
   const needsSubs = (x, today) => { if (isClosed(x) || (x.to || x.from) < today) return false;
     const [a, b] = String(x.subs || "").split("/").map(Number); return b > 0 && a < b; };
   const ofcCtx = () => ({ items: staff.items, teachers: staff.teachers, yearStart: staff.yearStart, teacher: "" });
-  const WHEN = [["soon", "קרובות"], ["today", "היום"], ["month", "החודש"], ["all", "כל השנה"]];
 
   async function showStaff() {
     onHome = true; onStaff = true;
@@ -851,55 +914,88 @@
     let r;
     try { r = await call("staff"); } catch (ex) { put(body, h("div.empty", null, ex.message)); return; }
     staff = r;
+    r.items = applyPending(r.items);
     if (r.bt) { officeBt = r.bt; store.set("tp_bt", officeBt); }
     const today = r.today || todayISO();
+    if (!["day", "week", "month"].includes(sf.mode)) sf.mode = "day";
+    sf.date = today;                                  // every visit starts on today
     const reasons = [...new Set(r.items.map(x => x.reason).filter(Boolean))];
-    const bar = h("div.filters"), list = h("div.slips"), sum = h("div.stats");
+    const nav = h("div.date-nav"), bar = h("div.filters"), list = h("div.slips"), sum = h("div.stats"), note = h("div");
     let limit = 40;
-    const inRange = x => {
-      const last = x.to || x.from;
-      if (sf.when === "soon") return last >= today && !isClosed(x);
-      if (sf.when === "today") return x.from <= today && last >= today && !isClosed(x);
-      if (sf.when === "month") return x.from.slice(0, 7) <= today.slice(0, 7) && last.slice(0, 7) >= today.slice(0, 7);
-      return true;
+    // ── the dates: yesterday / today / tomorrow / this week / this month / any day ──
+    const startOfWeek = d => addDays(d, -parseISO(d).getDay());                 // Sunday
+    const monthEdges = d => { const x = parseISO(d); return [iso(new Date(x.getFullYear(), x.getMonth(), 1)), iso(new Date(x.getFullYear(), x.getMonth() + 1, 0))]; };
+    const rangeOf = () => sf.mode === "week" ? [startOfWeek(sf.date), addDays(startOfWeek(sf.date), 5)]
+      : sf.mode === "month" ? monthEdges(sf.date) : [sf.date, sf.date];
+    const step = dir => {
+      if (sf.mode === "week") sf.date = addDays(sf.date, 7 * dir);
+      else if (sf.mode === "month") { const x = parseISO(sf.date); sf.date = iso(new Date(x.getFullYear(), x.getMonth() + dir, 1)); }
+      else { let d = addDays(sf.date, dir); if (parseISO(d).getDay() === 6) d = addDays(d, dir); sf.date = d; }
     };
+    const go = (mode, date) => { sf.mode = mode; sf.date = date; limit = 40; paint(); };
+    const picker = datePicker(sf.date, d => go("day", d), "2020-01-01");
+    const chip = (label, on, fn) => h("button.chip", { type: "button", class: on ? "on" : "", on: { click: fn } }, label);
+    const inRange = x => { const last = x.to || x.from, [lo, hi] = rangeOf(); return x.from <= hi && last >= lo && !isClosed(x); };
+    function paintNav() {
+      const [lo, hi] = rangeOf(), md = parseISO(sf.date);
+      picker.setValue(sf.date);
+      put(nav,
+        h("div.chips", null,
+          chip("אתמול", sf.mode === "day" && sf.date === addDays(today, -1), () => go("day", addDays(today, -1))),
+          chip("היום", sf.mode === "day" && sf.date === today, () => go("day", today)),
+          chip("מחר", sf.mode === "day" && sf.date === addDays(today, 1), () => go("day", addDays(today, 1))),
+          chip("השבוע", sf.mode === "week" && startOfWeek(sf.date) === startOfWeek(today), () => go("week", today)),
+          chip("החודש", sf.mode === "month" && sf.date.slice(0, 7) === today.slice(0, 7), () => go("month", today))),
+        h("div.date-row", null,
+          h("button.btn.small", { type: "button", "aria-label": "הקודם", on: { click: () => { step(-1); limit = 40; paint(); } } }, "→"),
+          picker,
+          h("button.btn.small", { type: "button", "aria-label": "הבא", on: { click: () => { step(1); limit = 40; paint(); } } }, "←")),
+        sf.mode === "day" ? null : h("div.range-title", null,
+          sf.mode === "week" ? `שבוע ${dm(lo)}–${dm(hi)}` : `${MONTHS[md.getMonth()]} ${md.getFullYear()}`));
+    }
     function paint() {
       if (sf.who && !r.teachers.some(t => t.name === sf.who)) sf.who = "";
       if (sf.reason && !reasons.includes(sf.reason)) sf.reason = "";
-      pref.set("sf", { when: sf.when, who: sf.who, reason: sf.reason });
+      pref.set("sf", { mode: sf.mode, who: sf.who, reason: sf.reason });
       const missingOnly = !!sf.missing, needOnly = !!sf.need;
-      const act = [sf.when !== "soon", sf.who, sf.reason, missingOnly, needOnly].filter(Boolean).length;
+      const act = [sf.who, sf.reason, missingOnly, needOnly].filter(Boolean).length;
+      paintNav();
       put(bar, filterBox(act,
-        fsel("מתי", sf, "when", WHEN, () => { limit = 40; paint(); }),
         fsel("מורה", sf, "who", [["", "כל הצוות"], ...r.teachers.slice().sort((a, b) => a.display.localeCompare(b.display, "he")).map(t => [t.name, t.display])], () => { limit = 40; paint(); }),
         reasons.length > 1 ? fsel("סיבה", sf, "reason", [["", "הכל"], ...reasons.map(x => [x, x])], () => { limit = 40; paint(); }) : null,
         h("label.fsel", null, h("span.flabel", null, "שיבוץ"),
-          h("select.input.sel", { on: { change: e => { sf.need = e.target.value === "need"; if (sf.need) sf.when = "soon"; limit = 40; paint(); } } },
+          h("select.input.sel", { on: { change: e => { sf.need = e.target.value === "need"; if (sf.need) sf.missing = false; limit = 40; paint(); } } },
             h("option", { value: "" }, "הכל"), h("option", { value: "need", selected: needOnly }, "רק שדורשות שיבוץ"))),
         h("label.fsel", null, h("span.flabel", null, "אישור מחלה"),
-          h("select.input.sel", { on: { change: e => { sf.missing = e.target.value === "missing"; limit = 40; paint(); } } },
+          h("select.input.sel", { on: { change: e => { sf.missing = e.target.value === "missing"; if (sf.missing) sf.need = false; limit = 40; paint(); } } },
             h("option", { value: "" }, "הכל"), h("option", { value: "missing", selected: missingOnly }, "רק בלי אישור")))));
-      let rows = r.items.filter(x => inRange(x) && (!sf.who || x.teacher === sf.who) && (!sf.reason || x.reason === sf.reason)
+      // "needs substitutes" and "no sick note" look at every date; the day buttons look at one period
+      const special = needOnly || missingOnly;
+      let rows = r.items.filter(x => (special ? !isClosed(x) && (x.to || x.from) >= (needOnly ? today : "0000") : inRange(x))
+        && (!sf.who || x.teacher === sf.who) && (!sf.reason || x.reason === sf.reason)
         && (!needOnly || needsSubs(x, today)) && (!missingOnly || (x.sick && !x.hasNote && !isClosed(x) && x.from <= today)));
-      if (sf.when === "soon" || sf.when === "today") rows = rows.slice().sort((a, b) => a.from.localeCompare(b.from) || a.fromHour - b.fromHour);
-      put(list, ...(rows.length ? rows.slice(0, limit).map(staffSlip) : [h("div.empty", null, "אין היעדרויות שמתאימות לסינון")]),
+      rows = rows.slice().sort((a, b) => a.from.localeCompare(b.from) || a.fromHour - b.fromHour);
+      put(note, special ? h("div.flash", null, h("span", null, needOnly ? "מוצגות כל ההיעדרויות שחסרים להן מחליפים, בכל התאריכים." : "מוצגות כל ההיעדרויות בלי אישור מחלה, בכל התאריכים."),
+        h("button.linkbtn", { type: "button", on: { click: () => { sf.need = sf.missing = false; limit = 40; paint(); } } }, "חזרה לתאריכים")) : null);
+      put(list, ...(rows.length ? rows.slice(0, limit).map(staffSlip) : [h("div.empty", null, special ? "אין היעדרויות שמתאימות" : sf.mode === "day" ? "אין היעדרויות ביום הזה" : "אין היעדרויות בתקופה הזאת")]),
         rows.length > limit ? h("button.btn.wide", { type: "button", on: { click: () => { limit += 40; paint(); } } }, `הצגת עוד (${rows.length - limit})`) : null);
       const away = r.items.filter(x => !isClosed(x) && x.from <= today && (x.to || x.from) >= today);
       const nNeed = r.items.filter(x => needsSubs(x, today)).length;
       const nNote = r.items.filter(x => x.sick && !x.hasNote && !isClosed(x) && x.from <= today && x.from >= noteCutoff()).length;
       put(sum,
         h("div.stat", null, h("b", null, new Set(away.map(x => x.teacher)).size), h("span", null, "נעדרים היום")),
-        h("button.stat", { type: "button", class: nNeed ? "warn" : "", on: { click: () => { sf.need = !sf.need; if (sf.need) { sf.when = "soon"; sf.missing = false; } limit = 40; paint(); } } },
+        h("button.stat", { type: "button", class: nNeed ? "warn" : "", on: { click: () => { sf.need = !sf.need; if (sf.need) sf.missing = false; limit = 40; paint(); } } },
           h("b", null, nNeed), h("span", null, sf.need ? "דורשות שיבוץ ✓" : "דורשות שיבוץ")),
-        h("button.stat", { type: "button", class: nNote ? "warn" : "", on: { click: () => { sf.missing = !sf.missing; if (sf.missing) { sf.need = false; sf.when = "all"; } limit = 40; paint(); } } },
+        h("button.stat", { type: "button", class: nNote ? "warn" : "", on: { click: () => { sf.missing = !sf.missing; if (sf.missing) sf.need = false; limit = 40; paint(); } } },
           h("b", null, nNote), h("span", null, sf.missing ? "בלי אישור ✓" : "בלי אישור מחלה")));
     }
     sf.missing = false; sf.need = false;
     paint();
-    put(body, sum, bar, list, r.synced ? h("div.synced", null, `המצב במערכת עודכן לאחרונה: ${r.synced}`) : null);
+    put(body, nav, sum, note, bar, list, r.synced ? h("div.synced", null, `המצב במערכת עודכן לאחרונה: ${r.synced}`) : null);
   }
 
   function staffSlip(x) {
+    if (x.pending) return pendingCard(x);
     const range = x.to && x.to !== x.from;
     const d1 = parseISO(x.from), hp = heb(d1);
     const closed = isClosed(x);
@@ -1061,10 +1157,11 @@
 
   function staffCancel(x) {
     const n = subsN(x);
+    const ref = { row: x.row || "", absenceId: x.absenceId || "" };
     modal("ביטול היעדרות", `לבטל את ההיעדרות של ${x.display || x.teacher} ב${dayName(x.from)} ${dm(x.from)}?` +
       (n ? ` שים לב: כבר שובצו מחליפים (${x.subs}), והשיבוצים יימחקו בשוטף.` : ""), [
-      ["כן, לבטל", () => background("מבטל את ההיעדרות", () => call("oCancel", { row: x.row || "", absenceId: x.absenceId || "" }),
-        { okText: "✓ הביטול נשלח. יירשם בשוטף תוך כמה דקות" }), "primary danger-fill"],
+      ["כן, לבטל", () => sendInBackground({ kind: "cancel", ...ref, label: "⏳ מבטל…" }, { act: "oCancel", payload: ref },
+        () => call("oCancel", ref), { label: "מבטל את ההיעדרות", okText: "✓ הביטול נשלח. יירשם בשוטף תוך כמה דקות", back: showStaff }), "primary danger-fill"],
       ["לא", null, ""]]);
   }
   function staffReplaceNote(x) {
@@ -1125,5 +1222,5 @@
   }
 
   // ── start ────────────────────────────────────────────────────────────
-  if (token && teacher) showHome(); else showLogin(CFG.scriptUrl || DEMO ? "" : "הדף עוד לא מחובר לגיליון.");
+  if (token && teacher) { showHome(); setTimeout(resumeOutbox, 1500); } else showLogin(CFG.scriptUrl || DEMO ? "" : "הדף עוד לא מחובר לגיליון.");
 })();

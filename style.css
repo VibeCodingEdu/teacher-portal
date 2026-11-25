@@ -313,3 +313,14 @@ button.stat:active { transform: scale(.97); }
   border: 0; border-bottom: 1px solid var(--line); background: none; font: inherit; color: inherit; text-align: start; cursor: pointer; }
 .pick-item:disabled { opacity: .4; cursor: default; }
 .pick-item:active:not(:disabled) { background: rgba(0,0,0,.04); }
+/* what is on its way */
+.slip.pending { opacity: .88; }
+.flash { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; margin: 12px 0 4px; padding: 10px 12px;
+  border-radius: 12px; background: rgba(60, 130, 80, .12); font-size: .92rem; line-height: 1.4; }
+/* the staff's dates: buttons and a calendar */
+.date-nav .chips { margin: 12px 0 8px; }
+.date-row { display: flex; gap: 8px; align-items: center; }
+.date-row .dp-btn { flex: 1; min-width: 0; }
+.range-title { text-align: center; color: var(--muted); font-size: .9rem; margin: 6px 0 0; }
+.date-nav .chips { flex-wrap: nowrap; gap: 6px; }
+.date-nav .chip { flex: 1 1 0; min-width: 0; padding: 9px 4px; font-size: .88rem; text-align: center; }
