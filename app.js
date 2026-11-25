@@ -988,15 +988,20 @@
         put(body, h("div.empty", null, ex.message), h("button.btn.wide", { type: "button", on: { click: load } }, "לנסות שוב"));
       }
     }
-    let working = false;
+    let inflight = 0;
+    /** The wish is sent in the background and the screen is free at once: the next hour can be assigned
+     *  while this one is still on its way. Each hour shows its own waiting state. */
     async function run(hr, pending, label, work, okText, apply) {
-      if (working) { toast("רגע, הפעולה הקודמת עוד בדרך"); return; }
-      working = true; seq++;        // an older refresh that is still on its way must not overwrite this
-      hr.pending = pending; paint();     // the hour shows the wish at once; שוטף confirms a few seconds later
-      const res = await background(label, work, { okText });
-      delete hr.pending; working = false;
-      if (res && apply) { apply(res); paint(); }      // שוטף confirmed: show it at once, no second round trip
-      else load();                                    // it failed: show what שוטף says now
+      if (hr.pending) { toast("הפעולה על השעה הזאת עוד בדרך"); return; }
+      inflight++; seq++;        // seq: an older refresh that is still on its way must not overwrite this
+      delete hr.err; hr.pending = pending; paint();
+      const res = await background(label, async () => {
+        try { return await work(); } catch (ex) { hr.err = ex.message; throw ex; }
+      }, { okText });
+      inflight--; delete hr.pending;
+      if (res && apply) apply(res);
+      paint();
+      if (!res && !inflight) load();        // something failed and nothing else is waiting: show what שוטף says now
     }
     function pick(hr) {
       const t = hr.t || [];
@@ -1014,7 +1019,8 @@
       return h("div.slip", null,
         h("div.slip-top", null, h("div.slip-date", null, `שעה ${hr.hour}`), hr.lesson ? h("span.muted", null, hr.lesson) : null),
         h("div.slip-badges", null, hr.pending ? h("span.badge", null, hr.pending)
-          : hr.sub ? h("span.badge.ok", null, `משובץ: ${hr.sub}`) : h("span.badge.bad", null, "לא משובץ")),
+          : hr.sub ? h("span.badge.ok", null, `משובץ: ${hr.sub}`) : h("span.badge.bad", null, "לא משובץ"),
+          hr.err && !hr.pending ? h("span.badge.bad", null, `לא בוצע: ${hr.err}`) : null),
         hr.pending ? null : h("div.slip-actions", null,
           h("button.btn", { type: "button", class: hr.sub ? "" : "primary", on: { click: () => pick(hr) } }, hr.sub ? "החלפה" : "שיבוץ"),
           hr.sub ? h("button.btn.danger", { type: "button", on: { click: () => modal("ביטול השיבוץ", `לבטל את השיבוץ של ${hr.sub} בשעה ${hr.hour}?`, [
