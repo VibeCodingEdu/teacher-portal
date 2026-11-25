@@ -896,6 +896,10 @@
   let staff = { items: [], teachers: [], today: "", yearStart: "" };
   const sf = Object.assign({ mode: "day", date: "", who: "", reason: "" }, pref.get("sf") || {});
   const subsN = x => Number(String(x.subs || "").split("/")[0]) || 0;
+  /** The office does not chase sick notes of absences before this date (and not of months already closed). */
+  const OFFICE_NOTES_FROM = "2026-11-01";
+  const officeNeedsNote = (x, today) => x.sick && !x.hasNote && !isClosed(x) && x.from <= today
+    && x.from >= OFFICE_NOTES_FROM && x.from >= noteCutoff();
   /** "2/5": two of five lessons have a substitute. Needs one when some are missing. */
   const needsSubs = (x, today) => { if (isClosed(x) || (x.to || x.from) < today) return false;
     const [a, b] = String(x.subs || "").split("/").map(Number); return b > 0 && a < b; };
@@ -973,7 +977,7 @@
       const special = needOnly || missingOnly;
       let rows = r.items.filter(x => (special ? !isClosed(x) && (x.to || x.from) >= (needOnly ? today : "0000") : inRange(x))
         && (!sf.who || x.teacher === sf.who) && (!sf.reason || x.reason === sf.reason)
-        && (!needOnly || needsSubs(x, today)) && (!missingOnly || (x.sick && !x.hasNote && !isClosed(x) && x.from <= today)));
+        && (!needOnly || needsSubs(x, today)) && (!missingOnly || officeNeedsNote(x, today)));
       rows = rows.slice().sort((a, b) => a.from.localeCompare(b.from) || a.fromHour - b.fromHour);
       put(note, special ? h("div.flash", null, h("span", null, needOnly ? "מוצגות כל ההיעדרויות שחסרים להן מחליפים, בכל התאריכים." : "מוצגות כל ההיעדרויות בלי אישור מחלה, בכל התאריכים."),
         h("button.linkbtn", { type: "button", on: { click: () => { sf.need = sf.missing = false; limit = 40; paint(); } } }, "חזרה לתאריכים")) : null);
@@ -981,7 +985,7 @@
         rows.length > limit ? h("button.btn.wide", { type: "button", on: { click: () => { limit += 40; paint(); } } }, `הצגת עוד (${rows.length - limit})`) : null);
       const away = r.items.filter(x => !isClosed(x) && x.from <= today && (x.to || x.from) >= today);
       const nNeed = r.items.filter(x => needsSubs(x, today)).length;
-      const nNote = r.items.filter(x => x.sick && !x.hasNote && !isClosed(x) && x.from <= today && x.from >= noteCutoff()).length;
+      const nNote = r.items.filter(x => officeNeedsNote(x, today)).length;
       put(sum,
         h("div.stat", null, h("b", null, new Set(away.map(x => x.teacher)).size), h("span", null, "נעדרים היום")),
         h("button.stat", { type: "button", class: nNeed ? "warn" : "", on: { click: () => { sf.need = !sf.need; if (sf.need) sf.missing = false; limit = 40; paint(); } } },
@@ -1015,7 +1019,7 @@
     const noteRow = x.hasNote ? h("div.slip-badges", null, h("span.badge.ok", null, "✓ אישור מחלה צורף"),
       notes.map((m, i) => h("button.linkbtn", { on: { click: () => downloadNote(m, true) } }, notes.length > 1 ? `הורדה ${i + 1}` : "הורדה")),
       closed ? null : h("button.linkbtn", { on: { click: () => staffReplaceNote(x) } }, "החלפת הקובץ"))
-      : (x.sick && !closed && x.from <= (staff.today || todayISO()) && x.from >= noteCutoff()) ? h("div.slip-badges", null, h("span.badge.bad", null, "חסר אישור מחלה")) : null;
+      : officeNeedsNote(x, staff.today || todayISO()) ? h("div.slip-badges", null, h("span.badge.bad", null, "חסר אישור מחלה")) : null;
     return h("div.slip", { class: closed ? "closed" : "" },
       h("div.slip-who", null, x.display || x.teacher),
       h("div.slip-top", null,
