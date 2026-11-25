@@ -234,7 +234,9 @@
     setWho();
     const name = h("input.input", { autocomplete: "name", placeholder: "שם פרטי ושם משפחה, למשל: יוסף כהן" });
     const id = h("input.input", { inputmode: "numeric", autocomplete: "off", placeholder: "9 ספרות", maxlength: "10" });
-    const code = h("input.input", { type: "password", autocomplete: "off", placeholder: "הקוד שקיבלת" });
+    // A text field shown as dots: a real "password" field makes the browser offer saved passwords and change what is typed.
+    const code = h("input.input.code", { type: "text", name: "office-code", autocomplete: "off", autocapitalize: "off", autocorrect: "off",
+      spellcheck: "false", dir: "ltr", placeholder: "הקוד שקיבלת" });
     const codeField = h("div.field.hidden", null, h("label.label", null, "קוד"), code);
     const err = h("p.error", null, msg);
     const go = h("button.btn.primary.wide", { type: "submit" }, "כניסה");

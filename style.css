@@ -304,3 +304,4 @@ button.stat:active { transform: scale(.97); }
 
 /* the office view: whose absence */
 .slip-who { font-weight: 800; color: var(--ink); font-size: 1rem; margin-bottom: 2px; }
+.input.code { -webkit-text-security: disc; text-security: disc; text-align: left; }
