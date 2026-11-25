@@ -307,6 +307,7 @@
   }
 
   async function showHome() {
+    if (office) { showStaff(); return; }      // the office has no absences of its own: it opens on the staff
     onHome = true; onStaff = false;
     setWho();
     const body = h("div", null, loading("טוען את ההיעדרויות שלך…"));
@@ -724,14 +725,15 @@
 
   // ── covered lessons ("מילויי מקום") ────────────────────────────────────
   const savedFl = pref.get("fl");
-  const fl = Object.assign({ group: "month", type: "", when: "", cls: "", who: "" }, savedFl || {});
+  const fl = Object.assign({ group: "month", type: "", when: "", cls: "", who: "", sub: "" }, savedFl || {});
   let flInit = !!savedFl;   // false until this device has chosen something
   let fillsCache = null;   // last answer of myFills, so the tab opens at once
   const sundayOf = s => addDays(s, -parseISO(s).getDay());
   const GROUPS = [["month", "חודש"], ["week", "שבוע"], ["day", "יום"], ["cls", "כיתה"], ["who", "במקום מי"], ["hour", "שעה"]];
 
   function tabsBar(active) {
-    return h("nav.tabs", { role: "tablist" }, [["abs", "ההיעדרויות שלי", showHome], ["fills", "מילויי מקום", showFills], ...(office ? [["staff", "הצוות", showStaff]] : [])].map(([k, t, fn]) =>
+    return h("nav.tabs", { role: "tablist" }, (office ? [["staff", "הצוות", showStaff], ["fills", "מילויי מקום", showFills]]
+      : [["abs", "ההיעדרויות שלי", showHome], ["fills", "מילויי מקום", showFills]]).map(([k, t, fn]) =>
       h("button.tab", { type: "button", role: "tab", "aria-selected": active === k ? "true" : "false", class: active === k ? "on" : "",
         on: { click: () => { if (active !== k) fn(); } } }, t)));
   }
@@ -743,13 +745,13 @@
       prefix: `[מילוי מקום ${dm(x.date)} שעה ${x.hour}${x.classes ? ", " + x.classes : ""}] ` };
     const hp = heb(parseISO(x.date));
     return h("div.frow2", { class: future ? "future" : "" },
-      h("div.fr-top", null, h("b", null, `${dayName(x.date)} ${dm(x.date)}`), hp ? h("span.fr-heb", null, `${hp.day} ב${hp.month}`) : null,
+      h("div.fr-top", null, h("b", null, `${dayName(x.date)} ${dm(x.date)}`), office && x.sub ? h("span.tag", null, x.sub) : null, hp ? h("span.fr-heb", null, `${hp.day} ב${hp.month}`) : null,
         h("span", null, `שעה ${x.hour}`),
         x.type === "שעה נוספת" ? h("span.tag", null, "שעה נוספת") : null,
         future ? h("span.tag.soon", null, "בקרוב") : null),
       h("div.fr-what", null, what),
       x.instead ? h("div.fr-inst", null, "במקום ", x.instead) : null,
-      h("button.btn.link.fr-fix", { type: "button", on: { click: () => showFix(null, ctx) } }, "יש טעות?"));
+      office ? null : h("button.btn.link.fr-fix", { type: "button", on: { click: () => showFix(null, ctx) } }, "יש טעות?"));
   }
 
   async function showFills() {
@@ -758,11 +760,12 @@
     const body = h("div", null, loading("טוען את המילויים שלך…"));
     put($("#main"),
       h("h1", null, "שלום, ", h("span.accent", null, teacher || "")),
-      h("p.lead", null, "השעות שמילאת מקום מתחילת שנת הלימודים"),
+      h("p.lead", null, office ? "המילויים של כל הצוות מתחילת שנת הלימודים" : "השעות שמילאת מקום מתחילת שנת הלימודים"),
       tabsBar("fills"), body);
-    let r = fillsCache;
+    let r = office ? null : fillsCache;
     if (r) put(body, h("div.empty", null, "מעדכן…"));
-    try { r = fillsCache = await call("myFills"); } catch (ex) { if (!r) { put(body, h("div.empty", null, ex.message)); return; } }
+    try { const got = await call(office ? "staffFills" : "myFills"); r = got; if (!office) fillsCache = got; }
+    catch (ex) { if (!r) { put(body, h("div.empty", null, ex.message)); return; } }
     const all = (r.rows || []).slice().sort((a, b) => b.date.localeCompare(a.date) || b.hour - a.hour);
     const today = r.today || todayISO();
     if (!all.length) {
@@ -773,14 +776,15 @@
     const done = all.filter(x => x.date <= today);
     const month = today.slice(0, 7);
     // first time on this device: open on what is coming, if anything is
-    if (!flInit && all.some(x => x.date > today)) { fl.when = "soon"; fl.group = "day"; }
+    if (office && !flInit) fl.group = "sub";
+    if (!flInit && !office && all.some(x => x.date > today)) { fl.when = "soon"; fl.group = "day"; }
     flInit = true;
     const stats = h("div.stats", null,
       h("div.stat", null, h("b", null, done.length), h("span", null, "שעות השנה")),
       h("div.stat", null, h("b", null, done.filter(x => x.date.startsWith(month)).length), h("span", null, "החודש")),
       h("div.stat", null, h("b", null, all.length - done.length), h("span", null, "קרובות")));
     const uniq = k => [...new Set(all.map(x => x[k]).filter(Boolean))].sort((a, b) => a.localeCompare(b, "he"));
-    const classes = uniq("classes"), whos = uniq("instead");
+    const classes = uniq("classes"), whos = uniq("instead"), subs = uniq("sub");
     const types = [...new Set(all.map(x => x.type))];
     const bar = h("div.filters"), list = h("div.groups");
 
@@ -789,6 +793,7 @@
         case "month": { const d = parseISO(x.date); return [x.date.slice(0, 7), `${MONTHS[d.getMonth()]} ${d.getFullYear()}`, 0]; }
         case "week": { const sun = sundayOf(x.date); return [sun, `שבוע ${dm(sun)}–${dm(addDays(sun, 5))}`, 0]; }
         case "day": { const hp = heb(parseISO(x.date)); return [x.date, `${dayName(x.date)} ${dm(x.date)}${hp ? ` · ${hp.day} ב${hp.month}` : ""}`, 0]; }
+        case "sub": return [x.sub || "—", x.sub || "ללא שם", 1];
         case "cls": return [x.classes || "—", x.classes || "ללא כיתה", 1];
         case "who": return [x.instead || "—", x.instead ? `במקום ${x.instead}` : "ללא מורה נעדר", 1];
         default: return [String(x.hour), `שעה ${x.hour}`, 2];
@@ -797,16 +802,19 @@
     function paint() {
       if (fl.cls && !classes.includes(fl.cls)) fl.cls = "";                // gone from the data
       if (fl.who && !whos.includes(fl.who)) fl.who = "";
+      if (fl.sub && !subs.includes(fl.sub)) fl.sub = "";
+      if (fl.group === "sub" && !office) fl.group = "month";
       if (fl.type && !types.includes(fl.type)) fl.type = "";
-      pref.set("fl", { group: fl.group, when: fl.when, type: fl.type, cls: fl.cls, who: fl.who });
+      pref.set("fl", { group: fl.group, when: fl.when, type: fl.type, cls: fl.cls, who: fl.who, sub: fl.sub });
       const opt = (key, label, values) => values.length < 2 ? null : fsel(label, fl, key, [["", "הכל"], ...values.map(v => [v, v])], paint);
       const act = [fl.when, fl.type, fl.cls, fl.who].filter(Boolean).length;
       put(bar,
-        fsel("סיכום לפי", fl, "group", GROUPS, paint),
+        office ? fsel("מורה", fl, "sub", [["", "כל הצוות"], ...subs.map(v => [v, v])], paint) : null,
+        fsel("סיכום לפי", fl, "group", office ? [["sub", "מורה"], ...GROUPS] : GROUPS, paint),
         filterBox(act,
           fsel("מתי", fl, "when", [["", "הכל"], ["past", "שהיו"], ["soon", "קרובות"]], paint),
           opt("type", "סוג", types), opt("cls", "כיתה", classes), opt("who", "במקום מי", whos)));
-      const rows = all.filter(x => (!fl.type || x.type === fl.type) && (!fl.cls || x.classes === fl.cls) && (!fl.who || x.instead === fl.who)
+      const rows = all.filter(x => (!fl.sub || x.sub === fl.sub) && (!fl.type || x.type === fl.type) && (!fl.cls || x.classes === fl.cls) && (!fl.who || x.instead === fl.who)
         && (!fl.when || (fl.when === "past" ? x.date <= today : x.date > today)));
       const groups = new Map();
       rows.forEach(x => { const [k, label, mode] = groupOf(x); (groups.get(k) || groups.set(k, { k, label, mode, rows: [] }).get(k)).rows.push(x); });
@@ -820,7 +828,7 @@
     }
     paint();
     put(body, stats, bar, list,
-      h("p.synced", null, "הנתונים לקוחים ממערכת שוטף. אם משהו לא נראה נכון, לחץ על \"יש טעות?\" ליד השורה."),
+      office ? null : h("p.synced", null, "הנתונים לקוחים ממערכת שוטף. אם משהו לא נראה נכון, לחץ על \"יש טעות?\" ליד השורה."),
       r.synced ? h("div.synced", null, `המצב במערכת עודכן לאחרונה: ${r.synced}`) : null);
   }
 
@@ -828,6 +836,9 @@
   let staff = { items: [], teachers: [], today: "", yearStart: "" };
   const sf = Object.assign({ when: "soon", who: "", reason: "" }, pref.get("sf") || {});
   const subsN = x => Number(String(x.subs || "").split("/")[0]) || 0;
+  /** "2/5": two of five lessons have a substitute. Needs one when some are missing. */
+  const needsSubs = (x, today) => { if (isClosed(x) || (x.to || x.from) < today) return false;
+    const [a, b] = String(x.subs || "").split("/").map(Number); return b > 0 && a < b; };
   const ofcCtx = () => ({ items: staff.items, teachers: staff.teachers, yearStart: staff.yearStart, teacher: "" });
   const WHEN = [["soon", "קרובות"], ["today", "היום"], ["month", "החודש"], ["all", "כל השנה"]];
 
@@ -859,27 +870,34 @@
       if (sf.who && !r.teachers.some(t => t.name === sf.who)) sf.who = "";
       if (sf.reason && !reasons.includes(sf.reason)) sf.reason = "";
       pref.set("sf", { when: sf.when, who: sf.who, reason: sf.reason });
-      const missingOnly = !!sf.missing;
-      const act = [sf.when !== "soon", sf.who, sf.reason, missingOnly].filter(Boolean).length;
+      const missingOnly = !!sf.missing, needOnly = !!sf.need;
+      const act = [sf.when !== "soon", sf.who, sf.reason, missingOnly, needOnly].filter(Boolean).length;
       put(bar, filterBox(act,
         fsel("מתי", sf, "when", WHEN, () => { limit = 40; paint(); }),
         fsel("מורה", sf, "who", [["", "כל הצוות"], ...r.teachers.slice().sort((a, b) => a.display.localeCompare(b.display, "he")).map(t => [t.name, t.display])], () => { limit = 40; paint(); }),
         reasons.length > 1 ? fsel("סיבה", sf, "reason", [["", "הכל"], ...reasons.map(x => [x, x])], () => { limit = 40; paint(); }) : null,
+        h("label.fsel", null, h("span.flabel", null, "שיבוץ"),
+          h("select.input.sel", { on: { change: e => { sf.need = e.target.value === "need"; if (sf.need) sf.when = "soon"; limit = 40; paint(); } } },
+            h("option", { value: "" }, "הכל"), h("option", { value: "need", selected: needOnly }, "רק שדורשות שיבוץ"))),
         h("label.fsel", null, h("span.flabel", null, "אישור מחלה"),
           h("select.input.sel", { on: { change: e => { sf.missing = e.target.value === "missing"; limit = 40; paint(); } } },
             h("option", { value: "" }, "הכל"), h("option", { value: "missing", selected: missingOnly }, "רק בלי אישור")))));
       let rows = r.items.filter(x => inRange(x) && (!sf.who || x.teacher === sf.who) && (!sf.reason || x.reason === sf.reason)
-        && (!missingOnly || (x.sick && !x.hasNote && !isClosed(x) && x.from <= today)));
+        && (!needOnly || needsSubs(x, today)) && (!missingOnly || (x.sick && !x.hasNote && !isClosed(x) && x.from <= today)));
       if (sf.when === "soon" || sf.when === "today") rows = rows.slice().sort((a, b) => a.from.localeCompare(b.from) || a.fromHour - b.fromHour);
       put(list, ...(rows.length ? rows.slice(0, limit).map(staffSlip) : [h("div.empty", null, "אין היעדרויות שמתאימות לסינון")]),
         rows.length > limit ? h("button.btn.wide", { type: "button", on: { click: () => { limit += 40; paint(); } } }, `הצגת עוד (${rows.length - limit})`) : null);
       const away = r.items.filter(x => !isClosed(x) && x.from <= today && (x.to || x.from) >= today);
+      const nNeed = r.items.filter(x => needsSubs(x, today)).length;
+      const nNote = r.items.filter(x => x.sick && !x.hasNote && !isClosed(x) && x.from <= today && x.from >= noteCutoff()).length;
       put(sum,
         h("div.stat", null, h("b", null, new Set(away.map(x => x.teacher)).size), h("span", null, "נעדרים היום")),
-        h("div.stat", null, h("b", null, r.items.filter(x => !isClosed(x) && x.from > today).length), h("span", null, "היעדרויות עתידיות")),
-        h("div.stat", null, h("b", null, r.items.filter(x => x.sick && !x.hasNote && !isClosed(x) && x.from <= today && x.from >= noteCutoff()).length), h("span", null, "בלי אישור מחלה")));
+        h("button.stat", { type: "button", class: nNeed ? "warn" : "", on: { click: () => { sf.need = !sf.need; if (sf.need) { sf.when = "soon"; sf.missing = false; } limit = 40; paint(); } } },
+          h("b", null, nNeed), h("span", null, sf.need ? "דורשות שיבוץ ✓" : "דורשות שיבוץ")),
+        h("button.stat", { type: "button", class: nNote ? "warn" : "", on: { click: () => { sf.missing = !sf.missing; if (sf.missing) { sf.need = false; sf.when = "all"; } limit = 40; paint(); } } },
+          h("b", null, nNote), h("span", null, sf.missing ? "בלי אישור ✓" : "בלי אישור מחלה")));
     }
-    sf.missing = false;
+    sf.missing = false; sf.need = false;
     paint();
     put(body, sum, bar, list, r.synced ? h("div.synced", null, `המצב במערכת עודכן לאחרונה: ${r.synced}`) : null);
   }
@@ -911,7 +929,8 @@
       h("div.slip-meta", null, hp ? h("span", null, `${hp.day} ב${hp.month}`) : null,
         h("span", null, hoursText(x.fromHour, x.toHour)), h("span", null, x.reason)),
       x.note ? h("div.slip-note", null, x.note) : null,
-      n ? h("div.slip-badges", null, h("span.badge", null, `שובצו מחליפים: ${x.subs}`)) : null,
+      x.subs ? h("div.slip-badges", null, needsSubs(x, staff.today || todayISO())
+        ? h("span.badge.bad", null, `חסרים מחליפים (${x.subs})`) : h("span.badge.ok", null, `מחליפים: ${x.subs}`)) : null,
       noteRow,
       actions.length ? h("div.slip-actions", null, actions) : null);
   }
@@ -955,6 +974,11 @@
         { kind: "report", row: 12, teacher: "כהן לוי", display: "לוי כהן", from: T, to: T, fromHour: 1, toHour: 10, reason: "מחלת ילד", note: "", status: "הוזן בשוטף", absenceId: "9", source: "המורה", sick: true, hasNote: false, subs: "3/6", lock: "subs" },
         { kind: "office", teacher: "ברק דוד", display: "דוד ברק", absenceId: "11", from: addDays(T, 2), to: addDays(T, 2), fromHour: 2, toHour: 4, reason: "אחר", source: "המשרד", sick: false, hasNote: false, lock: "office" }]) };
     if (action === "oReport") return { ok: true, row: 98 };
+    if (action === "staffFills") return { ok: true, today: T, synced: "15/11/2026 19:40", rows: [
+      { id: "1", sub: "אבי צורי", date: addDays(T, -2), hour: 3, classes: "ד1", subject: "חומש", instead: "כהן לוי", type: "מילוי מקום" },
+      { id: "2", sub: "אבי צורי", date: addDays(T, -9), hour: 2, classes: "ה2", subject: "אנגלית", instead: "ברק דוד", type: "מילוי מקום" },
+      { id: "3", sub: "דוד ברק", date: addDays(T, -3), hour: 5, classes: "ו1", subject: "גמרא", instead: "כהן לוי", type: "מילוי מקום" },
+      { id: "4", sub: "לוי כהן", date: addDays(T, 2), hour: 4, classes: "ד1", subject: "חשבון", instead: "ברק דוד", type: "מילוי מקום" }] };
     if (action === "mine") return { ok: true, office: demoOffice, teacher: demoOffice ? "אבי צורי" : "ישראל ישראלי", items: demoItems, synced: "15/11/2026 19:40", today: T,
       fixes: [{ at: "10/11/2026 08:12", date: addDays(T, -45), text: "הייתי רק עד שעה 6", status: "טופל", answer: "תוקן, השעות עודכנו" },
               { at: "15/11/2026 18:30", date: nextSchoolDay(addDays(T, 3)), text: "לא נעדרתי בשעה 6", status: "נשלח למנדי", answer: "" }] };
