@@ -940,7 +940,7 @@
     const r = await call("oAssign", { op, ...p });
     const t0 = Date.now(); let fails = 0;
     for (;;) {
-      await sleep(1100);
+      await sleep(600);
       let q;
       try { q = await call("oAssignPoll", { req: r.req }); }
       catch (ex) { if (++fails > 3 || /להזדהות/.test(ex.message)) throw ex; continue; }
@@ -972,26 +972,29 @@
     const days = [];
     for (let d = x.from; d <= last && days.length < 31; d = addDays(d, 1)) if (parseISO(d).getDay() !== 6) days.push(d);
     let day = days.find(d => d >= today) || days[days.length - 1], hours = [], seq = 0;
+    const byDay = {};      // the hours already loaded, so going back to a day is instant
     const dayBar = h("div.chips"), body = h("div.slips");
     const paintDays = () => put(dayBar, ...days.map(d => h("button.chip", { type: "button", class: d === day ? "on" : "",
       on: { click: () => { day = d; paintDays(); load(); } } }, `${dayName(d)} ${dm(d)}`)));
     async function load() {
-      const my = ++seq;
-      put(body, loading("טוען את השעות משוטף…"));
+      const my = ++seq, d = day;
+      if (byDay[d]) { hours = byDay[d]; paint(); } else put(body, loading("טוען את השעות משוטף…"));
       try {
-        const r = await assignReq("hours", { absenceId: x.absenceId, date: day });
+        const r = await assignReq("hours", { absenceId: x.absenceId, date: d });
         if (my !== seq) return;
-        hours = r.hours || []; paint();
+        hours = byDay[d] = r.hours || []; paint();
       } catch (ex) {
-        if (my !== seq) return;
+        if (my !== seq || byDay[d]) return;      // a failed refresh keeps showing what was loaded
         put(body, h("div.empty", null, ex.message), h("button.btn.wide", { type: "button", on: { click: load } }, "לנסות שוב"));
       }
     }
-    async function run(label, work, okText) {
+    async function run(label, work, okText, apply) {
+      seq++;        // an older refresh that is still on its way must not overwrite this
       body.style.opacity = ".5"; body.style.pointerEvents = "none";
-      await background(label, work, { okText });
+      const res = await background(label, work, { okText });
       body.style.opacity = ""; body.style.pointerEvents = "";
-      load();       // always show what שוטף says now
+      if (res && apply) { apply(res); paint(); }      // שוטף confirmed: show it at once, no second round trip
+      else load();                                    // it failed: show what שוטף says now
     }
     function pick(hr) {
       const t = hr.t || [];
@@ -1000,7 +1003,7 @@
         { label: "מורים זמינים אחרים", items: t.filter(y => FREE_TAGS.includes(y.g) && y.g !== "פנוי") },
         { label: "תפוסים", items: t.filter(y => !FREE_TAGS.includes(y.g)) }], y => {
         const go = () => run(`משבץ את ${y.n}`, () => assignReq("assign", { absenceId: x.absenceId, date: day, hour: hr.hour, teacherId: y.i }),
-          `✓ ${y.n} שובץ בשעה ${hr.hour}`);
+          `✓ ${y.n} שובץ בשעה ${hr.hour}`, res => { hr.sub = res.teacher || y.n; (hr.t || []).forEach(z => { if (z.i === y.i) z.g = "משובץ"; }); });
         if (y.g !== "פנוי") modal("לאשר את השיבוץ?", `${y.n} מסומן "${y.g}" בשעה ${hr.hour}. לשבץ בכל זאת?`, [["כן, לשבץ", go, "primary"], ["לא", null, ""]]);
         else go();
       });
@@ -1013,7 +1016,7 @@
           h("button.btn", { type: "button", class: hr.sub ? "" : "primary", on: { click: () => pick(hr) } }, hr.sub ? "החלפה" : "שיבוץ"),
           hr.sub ? h("button.btn.danger", { type: "button", on: { click: () => modal("ביטול השיבוץ", `לבטל את השיבוץ של ${hr.sub} בשעה ${hr.hour}?`, [
             ["כן, לבטל", () => run("מבטל את השיבוץ", () => assignReq("unassign", { absenceId: x.absenceId, date: day, hour: hr.hour }),
-              `✓ השיבוץ בשעה ${hr.hour} בוטל`), "primary danger-fill"], ["לא", null, ""]]) } }, "ביטול שיבוץ") : null));
+              `✓ השיבוץ בשעה ${hr.hour} בוטל`, () => { hr.sub = ""; }), "primary danger-fill"], ["לא", null, ""]]) } }, "ביטול שיבוץ") : null));
     }
     function paint() {
       put(body, ...(hours.length ? hours.map(card) : [h("div.empty", null, "אין ביום הזה שיעורים עם כיתה, ולכן אין מה לשבץ.")]),
