@@ -988,11 +988,13 @@
         put(body, h("div.empty", null, ex.message), h("button.btn.wide", { type: "button", on: { click: load } }, "לנסות שוב"));
       }
     }
-    async function run(label, work, okText, apply) {
-      seq++;        // an older refresh that is still on its way must not overwrite this
-      body.style.opacity = ".5"; body.style.pointerEvents = "none";
+    let working = false;
+    async function run(hr, pending, label, work, okText, apply) {
+      if (working) { toast("רגע, הפעולה הקודמת עוד בדרך"); return; }
+      working = true; seq++;        // an older refresh that is still on its way must not overwrite this
+      hr.pending = pending; paint();     // the hour shows the wish at once; שוטף confirms a few seconds later
       const res = await background(label, work, { okText });
-      body.style.opacity = ""; body.style.pointerEvents = "";
+      delete hr.pending; working = false;
       if (res && apply) { apply(res); paint(); }      // שוטף confirmed: show it at once, no second round trip
       else load();                                    // it failed: show what שוטף says now
     }
@@ -1002,7 +1004,7 @@
         { label: "פנוי", items: t.filter(y => y.g === "פנוי") },
         { label: "מורים זמינים אחרים", items: t.filter(y => FREE_TAGS.includes(y.g) && y.g !== "פנוי") },
         { label: "תפוסים", items: t.filter(y => !FREE_TAGS.includes(y.g)) }], y => {
-        const go = () => run(`משבץ את ${y.n}`, () => assignReq("assign", { absenceId: x.absenceId, date: day, hour: hr.hour, teacherId: y.i }),
+        const go = () => run(hr, `⏳ משבץ את ${y.n}…`, `משבץ את ${y.n}`, () => assignReq("assign", { absenceId: x.absenceId, date: day, hour: hr.hour, teacherId: y.i }),
           `✓ ${y.n} שובץ בשעה ${hr.hour}`, res => { hr.sub = res.teacher || y.n; (hr.t || []).forEach(z => { if (z.i === y.i) z.g = "משובץ"; }); });
         if (y.g !== "פנוי") modal("לאשר את השיבוץ?", `${y.n} מסומן "${y.g}" בשעה ${hr.hour}. לשבץ בכל זאת?`, [["כן, לשבץ", go, "primary"], ["לא", null, ""]]);
         else go();
@@ -1011,11 +1013,12 @@
     function card(hr) {
       return h("div.slip", null,
         h("div.slip-top", null, h("div.slip-date", null, `שעה ${hr.hour}`), hr.lesson ? h("span.muted", null, hr.lesson) : null),
-        h("div.slip-badges", null, hr.sub ? h("span.badge.ok", null, `משובץ: ${hr.sub}`) : h("span.badge.bad", null, "לא משובץ")),
-        h("div.slip-actions", null,
+        h("div.slip-badges", null, hr.pending ? h("span.badge", null, hr.pending)
+          : hr.sub ? h("span.badge.ok", null, `משובץ: ${hr.sub}`) : h("span.badge.bad", null, "לא משובץ")),
+        hr.pending ? null : h("div.slip-actions", null,
           h("button.btn", { type: "button", class: hr.sub ? "" : "primary", on: { click: () => pick(hr) } }, hr.sub ? "החלפה" : "שיבוץ"),
           hr.sub ? h("button.btn.danger", { type: "button", on: { click: () => modal("ביטול השיבוץ", `לבטל את השיבוץ של ${hr.sub} בשעה ${hr.hour}?`, [
-            ["כן, לבטל", () => run("מבטל את השיבוץ", () => assignReq("unassign", { absenceId: x.absenceId, date: day, hour: hr.hour }),
+            ["כן, לבטל", () => run(hr, `⏳ מבטל את השיבוץ של ${hr.sub}…`, "מבטל את השיבוץ", () => assignReq("unassign", { absenceId: x.absenceId, date: day, hour: hr.hour }),
               `✓ השיבוץ בשעה ${hr.hour} בוטל`, () => { hr.sub = ""; }), "primary danger-fill"], ["לא", null, ""]]) } }, "ביטול שיבוץ") : null));
     }
     function paint() {
