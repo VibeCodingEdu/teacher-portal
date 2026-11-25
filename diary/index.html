@@ -33,6 +33,7 @@ main { padding-top: 6px !important; padding-bottom: 28px !important; }
         <button class="tab active" data-view="week" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="16" rx="2.5"/><path d="M3.5 9.5h17M8.5 4.5v-2M15.5 4.5v-2M8 14h2M14 14h2"/></svg><span class="t-full">מערכת ויומן</span><span class="t-short">יומן</span></button>
         <button class="tab" data-view="absences" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9.5" cy="8.5" r="3.5"/><path d="M3.5 20c.4-3.4 2.9-5.5 6-5.5s5.6 2.1 6 5.5M16.5 8.5h5"/></svg><span class="t-full">היעדרויות מורים</span><span class="t-short">היעדרויות</span></button>
         <button class="tab" data-view="tt" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg><span class="t-full">מערכת שעות</span><span class="t-short">שעות</span></button>
+        <button class="tab" data-view="sum" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg><span class="t-full">ריכוז התנהגות</span><span class="t-short">ריכוז</span></button>
         <button class="tab" data-view="fills" role="tab"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h13l-3-3M19 16H6l3 3"/></svg><span class="t-full">מילויי מקום</span><span class="t-short">מילויים</span></button>
       </nav>
       <div class="who" id="who"></div>
@@ -48,6 +49,7 @@ main { padding-top: 6px !important; padding-bottom: 28px !important; }
             <button class="icon-btn" id="nextWeek" title="שבוע הבא" aria-label="שבוע הבא"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" /></svg></button>
           </div>
           <button class="btn ghost" id="thisWeek">היום</button>
+          <button class="btn ghost sum-open" id="sumOpen" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-8M22 20H2"/></svg>ריכוז</button>
           <div class="legend">
             <span><i class="mark-st done"></i>דוח הוזן</span>
             <span><i class="mark-st todo"></i>ממתין לדוח</span>
@@ -100,6 +102,11 @@ main { padding-top: 6px !important; padding-bottom: 28px !important; }
           <span><i class="lg fill"></i>מילוי מקום</span>
           <span><i class="lg absent"></i>נעדר</span>
         </div>
+      </section>
+      <section id="view-sum" class="view hidden">
+        <div class="smx-head"><button class="btn ghost" id="sumBack" type="button">חזרה ליומן</button><h1 class="week-title">ריכוז התנהגות</h1></div>
+        <div id="sumBar" class="smx-bar"></div>
+        <div id="sumOut"></div>
       </section>
       <section id="view-fills" class="view hidden">
         <h1 class="week-title">מילויי מקום</h1>

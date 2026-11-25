@@ -166,6 +166,11 @@
       const b = opts.body, op = { add: "noteAdd", set: "noteSet", delete: "noteDelete" }[b.op];
       return dyCall(op, { url: b.url, pupil: b.pupil, draft: b.draft, id: b.id, changes: b.changes });
     }
+    if (u.pathname === "/api/summary/options") return dyCall("sumOptions", {});
+    if (u.pathname === "/api/summary") {
+      const b = opts.body;
+      return dyCall(b.what === "notes" ? "sumNotes" : "sum", { objects: b.objects, division: b.division, dates: b.dates });
+    }
     if (u.pathname === "/api/event") return post ? dyCall("eventSave", { url: opts.body.url, draft: opts.body.draft }) : dyCall("event", { url: q.get("url") });
     throw new Error("זה לא זמין ביומן האישי");
   }
@@ -333,18 +338,215 @@
   });
 
   // ── tabs ─────────────────────────────────────────────────────────────
-  document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => {
-    document.querySelectorAll(".tab").forEach(x => x.classList.toggle("active", x === b));
-    const v = b.dataset.view;
-    $("#view-week").classList.toggle("hidden", v !== "week");
-    $("#view-absences").classList.toggle("hidden", v !== "absences");
-    $("#view-tt").classList.toggle("hidden", v !== "tt");
-    $("#view-fills").classList.toggle("hidden", v !== "fills");
+  document.querySelectorAll(".tab").forEach(b => b.addEventListener("click", () => showView(b.dataset.view)));
+
+  // ── summary (ריכוז): events per student, class, subject; from report 161, read only ──
+  const sm = { form: null, picked: new Set(), div: "", from: "", to: "", custom: false, data: null, notes: null,
+    off: new Set(), onlyUnj: false, onlyFlag: false, pct: 10, open: null };
+  try { const p = Number(localStorage.getItem("sumPct")); if (p >= 1 && p <= 100) sm.pct = p; } catch (e) { /* no storage */ }
+  const T_COLOR = { "חיסור": "#c23b3b", "איחור": "#e0812b", "הפרעה": "#7a56c8", "חיזוק חיובי": "#1f9d6b", "אחר": "#8a94a0",
+    "אי הבאת ציוד": "#b59a1a", "אי הכנת ש.ב": "#4a6fe0", "יציאה לפעילות בית-ספרית": "#2c9aa8" };
+  const T_FALLBACK = ["#a05a8c", "#5a8f3d", "#3d7fa0", "#a0813d"];
+  const T_GOOD = new Set(["חיזוק חיובי", "יציאה לפעילות בית-ספרית"]);   // events that are not a problem
+  const tColor = t => T_COLOR[t] || T_FALLBACK[[...t].reduce((a, c) => a + c.charCodeAt(0), 0) % T_FALLBACK.length];
+  const SVGNS = "http://www.w3.org/2000/svg";
+  function sv(tag, attrs, ...kids) {
+    const el = document.createElementNS(SVGNS, tag);
+    for (const [k, v] of Object.entries(attrs || {})) el.setAttribute(k, v);
+    for (const k of kids.flat()) if (k) el.append(k instanceof Node ? k : document.createTextNode(String(k)));
+    return el;
+  }
+  const dmy = s => `${s.slice(8, 10)}/${s.slice(5, 7)}/${s.slice(0, 4)}`;
+  const fromDmy = s => `${s.slice(6)}-${s.slice(3, 5)}-${s.slice(0, 2)}`;
+
+  function showView(v) {
+    document.querySelectorAll(".tab").forEach(x => x.classList.toggle("active", x.dataset.view === v));
+    for (const n of ["week", "absences", "tt", "fills", "sum"]) { const e = $("#view-" + n); if (e) e.classList.toggle("hidden", v !== n); }
     if (v === "fills") loadFills();
     if (v === "absences") loadAbsences();
     if (v === "tt") loadTT();
-  }));
+    if (v === "sum") loadSummary();
+  }
 
+  async function loadSummary() {
+    const bar = $("#sumBar"), out = $("#sumOut");
+    if (!sm.form) {
+      out.replaceChildren(loading("טוען את הכיתות שלך…"));
+      try { sm.form = await api("/api/summary/options"); }
+      catch (err) { out.replaceChildren(h("div.empty-state", null, err.message)); return; }
+      const t = todayISO(), ds = sm.form.divisions;
+      const span = d => parseISO(fromDmy(d.to)) - parseISO(fromDmy(d.from));
+      const cur = ds.filter(d => fromDmy(d.from) <= t && t <= fromDmy(d.to)).sort((x, y) => span(x) - span(y))[0] || ds[0];
+      sm.div = cur.id; sm.from = fromDmy(cur.from); sm.to = fromDmy(cur.to);
+      if (sm.form.objects.length <= 6) sm.form.objects.forEach(o => sm.picked.add(o.id));
+    }
+    paintSumBar();
+    if (sm.data) paintSum(); else out.replaceChildren(h("div.empty-state", null,
+      sm.picked.size ? "לחצו על ״הצג״ כדי לקרוא את הנתונים" : "בחרו כיתות או קבוצות ולחצו על ״הצג״"));
+  }
+
+  function paintSumBar() {
+    const bar = $("#sumBar"), f = sm.form;
+    const names = f.objects.filter(o => sm.picked.has(o.id)).map(o => o.label);
+    const pick = h("button.btn.ghost", { type: "button", on: { click: openPicker } },
+      sm.picked.size ? `${sm.picked.size} ${sm.picked.size === 1 ? "כיתה/קבוצה" : "כיתות/קבוצות"}: ${names.slice(0, 2).join(" · ")}${names.length > 2 ? "…" : ""}` : "בחירת כיתות וקבוצות");
+    const chips = f.divisions.map(d => h("button.chip", { type: "button", class: !sm.custom && sm.div === d.id ? "on" : "", on: { click: () => {
+      sm.custom = false; sm.div = d.id; sm.from = fromDmy(d.from); sm.to = fromDmy(d.to); sm.data = null; paintSumBar(); loadSummary(); } } }, d.label));
+    chips.push(h("button.chip", { type: "button", class: sm.custom ? "on" : "", on: { click: () => { sm.custom = true; paintSumBar(); } } }, "תאריכים"));
+    const dates = sm.custom ? h("div.fills-dates", null,
+      datePicker({ value: sm.from, allowSat: true, label: "מתאריך", onPick: d => { sm.from = d; if (sm.to < d) sm.to = d; sm.data = null; paintSumBar(); } }),
+      datePicker({ value: sm.to, allowSat: true, label: "עד", onPick: d => { sm.to = d; if (sm.from > d) sm.from = d; sm.data = null; paintSumBar(); } })) : null;
+    const go = h("button.btn.primary", { type: "button", disabled: !sm.picked.size, on: { click: fetchSummary } }, "הצג");
+    bar.replaceChildren(...[h("div.smx-pick", null, pick, go), h("div.chips", null, chips), dates].filter(Boolean));
+  }
+
+  function openPicker() {
+    const f = sm.form, q = h("input.input", { type: "search", placeholder: "חיפוש…", "aria-label": "חיפוש כיתה או קבוצה" });
+    const list = h("div.pk-list");
+    const draw = () => {
+      const t = q.value.trim(), rows = f.objects.filter(o => !t || o.label.includes(t));
+      const part = (title, arr) => arr.length ? [h("div.pk-h", null, title), ...arr.map(o => h("label.pk-row", null,
+        h("input", { type: "checkbox", checked: sm.picked.has(o.id), on: { change: e => { e.target.checked ? sm.picked.add(o.id) : sm.picked.delete(o.id); count.textContent = sm.picked.size; } } }),
+        h("span", null, o.label)))] : [];
+      put(list, part("כיתות", rows.filter(o => !o.group)), part("קבוצות לימוד", rows.filter(o => o.group)), rows.length ? null : h("div.muted", null, "לא נמצא"));
+    };
+    const count = h("b", null, sm.picked.size);
+    q.addEventListener("input", draw); draw();
+    openSheet("כיתות וקבוצות", "בחרו אחת או יותר. כיתה וקבוצה שלה לא נספרות פעמיים", [q, list],
+      [h("span.muted", null, h("span", null, "נבחרו "), count), h("button.btn.primary", { type: "button", on: { click: () => { sm.data = null; closeSheet(); paintSumBar(); loadSummary(); } } }, "סיום")]);
+  }
+
+  async function fetchSummary() {
+    const out = $("#sumOut"), ids = [...sm.picked], dates = sm.custom ? [dmy(sm.from), dmy(sm.to)] : null;
+    const all = { students: [], events: [] }, seen = new Set(), seenS = new Set();
+    sm.notes = null;
+    try {
+      for (let i = 0; i < ids.length; i += 4) {
+        out.replaceChildren(loading(ids.length > 4 ? `קורא מסמארט סקול… (${Math.min(i + 4, ids.length)} מתוך ${ids.length})` : "קורא מסמארט סקול…"));
+        const r = await api("/api/summary", { method: "POST", body: { objects: ids.slice(i, i + 4), division: sm.div, dates } });
+        for (const s of r.students) { const k = s.s + "|" + s.c; if (!seenS.has(k)) { seenS.add(k); all.students.push(s); } }
+        for (const e of r.events) { const k = [e.s, e.c, e.t, e.d, e.h].join("|"); if (!seen.has(k)) { seen.add(k); all.events.push(e); } }
+      }
+    } catch (err) { out.replaceChildren(h("div.empty-state", null, err.message)); return; }
+    sm.data = all; sm.off = new Set(); sm.open = null;
+    paintSum();
+    api("/api/summary", { method: "POST", body: { what: "notes", objects: ids.slice(0, 12) } })
+      .then(r => { sm.notes = r.notes; paintSum(); }).catch(() => {});
+  }
+
+  function weekKey(iso_) { return addDays(iso_, -parseISO(iso_).getDay()); }
+  function bars(rows, total) {
+    return h("div.sm-bars", null, rows.map(([label, n]) => h("div.sm-bar", null,
+      h("span.sb-l", null, label),
+      h("span.sb-t", null, h("i", { style: `width:${total ? Math.max(2, n / total * 100) : 0}%` })),
+      h("b", null, n))));
+  }
+
+  function paintSum() {
+    const out = $("#sumOut"), D = sm.data;
+    if (!D) return;
+    const types = [...new Set(D.events.map(e => e.t))].sort((a, b) => D.events.filter(e => e.t === b).length - D.events.filter(e => e.t === a).length);
+    const on = types.filter(t => !sm.off.has(t));
+    const ev = D.events.filter(e => on.includes(e.t) && (!sm.onlyUnj || !e.j));
+    if (!D.events.length && !D.students.length) { out.replaceChildren(h("div.empty-state", null, "אין נתונים בבחירה הזו")); return; }
+    const typeChips = h("div.chips.sm-types", null, types.map(t => h("button.chip", { type: "button", class: sm.off.has(t) ? "" : "on", style: sm.off.has(t) ? "" : `background:${tColor(t)};border-color:${tColor(t)}`,
+      on: { click: () => { sm.off.has(t) ? sm.off.delete(t) : sm.off.add(t); paintSum(); } } }, `${t} ${D.events.filter(e => e.t === t).length}`)),
+      h("button.chip", { type: "button", class: sm.onlyUnj ? "on" : "", on: { click: () => { sm.onlyUnj = !sm.onlyUnj; paintSum(); } } }, "ללא מוצדקים"));
+
+    // numbers
+    const by = new Map();
+    for (const t of on) by.set(t, ev.filter(e => e.t === t).length);
+    const stud = new Set(ev.filter(e => !T_GOOD.has(e.t)).map(e => e.s + "|" + e.c));
+    const stats = h("div.sm-stats", null,
+      ...[...by].slice(0, 4).map(([t, n]) => h("div.stat", null, h("b", { style: `color:${tColor(t)}` }, n), h("span", null, t))),
+      h("div.stat", null, h("b", null, stud.size), h("span", null, "תלמידים עם אירוע")),
+      sm.notes ? h("div.stat", null, h("b", null, Object.values(sm.notes).reduce((a, n) => a + n, 0)), h("span", null, "הערות מעקב (כל השנה)")) : null);
+
+    // donut
+    const tot = ev.length, R = 52, C = 2 * Math.PI * R;
+    let acc = 0;
+    const donut = sv("svg", { viewBox: "0 0 140 140", class: "sm-donut", role: "img", "aria-label": "התפלגות אירועים לפי סוג" },
+      sv("circle", { cx: 70, cy: 70, r: R, fill: "none", stroke: "var(--line)", "stroke-width": 20 }),
+      ...[...by].filter(([, n]) => n).map(([t, n]) => { const len = n / tot * C, c = sv("circle", { cx: 70, cy: 70, r: R, fill: "none", stroke: tColor(t), "stroke-width": 20,
+        "stroke-dasharray": `${len} ${C - len}`, "stroke-dashoffset": -acc, transform: "rotate(-90 70 70)" }); acc += len; return c; }),
+      sv("text", { x: 70, y: 76, "text-anchor": "middle", class: "sm-donut-n" }, tot));
+    const legend = h("div.sm-legend", null, [...by].map(([t, n]) => h("div", null, h("i", { style: `background:${tColor(t)}` }), h("span", null, t),
+      h("b", null, n), h("span.muted", null, tot ? `${Math.round(n / tot * 100)}%` : ""))));
+    const pie = h("section.sm-card", null, h("h3", null, "לפי סוג אירוע"), h("div.sm-pie", null, donut, legend));
+
+    // weeks
+    const wk = new Map();
+    for (const e of ev) { const k = weekKey(e.d); const m = wk.get(k) || wk.set(k, new Map()).get(k); m.set(e.t, (m.get(e.t) || 0) + 1); }
+    const weeks = [...wk.keys()].sort(), max = Math.max(1, ...[...wk.values()].map(m => [...m.values()].reduce((a, b) => a + b, 0)));
+    const W = 32, H = 110;
+    const trend = h("section.sm-card", null, h("h3", null, "לפי שבוע"),
+      weeks.length ? h("div.sm-scroll", null, sv("svg", { viewBox: `0 0 ${Math.max(weeks.length * W, 80)} ${H + 18}`, style: `width:${Math.max(weeks.length * W, 80)}px;height:${H + 18}px`, class: "sm-trend", role: "img", "aria-label": "אירועים לפי שבוע" },
+        ...weeks.map((k, i) => { let y = H; const g = sv("g", null, sv("title", null, `שבוע ${dm(k)}: ${[...wk.get(k)].map(([t, n]) => `${t} ${n}`).join(", ")}`));
+          for (const [t, n] of [...wk.get(k)]) { const hh = n / max * (H - 6); y -= hh; g.append(sv("rect", { x: i * W + 4, y, width: W - 8, height: hh, rx: 2, fill: tColor(t) })); }
+          g.append(sv("text", { x: i * W + W / 2, y: H + 13, "text-anchor": "middle", class: "sm-ax" }, dm(k).slice(0, 5))); return g; }))) : h("div.muted", null, "אין אירועים"));
+
+    // weekday x hour
+    const grid = new Map(); let gmax = 0;
+    for (const e of ev) if (e.h) { const k = parseISO(e.d).getDay() + "-" + e.h; grid.set(k, (grid.get(k) || 0) + 1); gmax = Math.max(gmax, grid.get(k)); }
+    const hrs = [...new Set(ev.filter(e => e.h).map(e => e.h))].sort((a, b) => a - b), days = [0, 1, 2, 3, 4, 5];
+    const heat = h("section.sm-card", null, h("h3", null, "מתי זה קורה"),
+      hrs.length ? h("div.sm-heat", { style: `--cols:${days.length}` }, h("span"), days.map(d => h("span.hh", null, DAYS[d].slice(0, 3))),
+        hrs.flatMap(hr => [h("span.hh", null, `שעה ${hr}`), ...days.map(d => { const n = grid.get(d + "-" + hr) || 0;
+          return h("span.hc", { title: `${DAYS[d]} שעה ${hr}: ${n}`, style: n ? `background:color-mix(in srgb, var(--danger) ${Math.round(18 + n / gmax * 72)}%, transparent)` : "" }, n || ""); })]))
+        : h("div.muted", null, "אין נתוני שעה"));
+
+    // classes / subjects
+    const cnt = (key) => { const m = new Map(); for (const e of ev) { const k = e[key] || "—"; m.set(k, (m.get(k) || 0) + 1); } return [...m].sort((a, b) => a[0].localeCompare(b[0], "he")); };
+    const classes = cnt("c"), subjects = cnt("m");
+    const classCard = classes.length > 1 ? h("section.sm-card", null, h("h3", null, "לפי כיתה"), bars(classes, Math.max(...classes.map(x => x[1])))) : null;
+    const subjCard = subjects.length > 1 ? h("section.sm-card", null, h("h3", null, "לפי מקצוע"), bars(subjects, Math.max(...subjects.map(x => x[1])))) : null;
+
+    // students: alphabetical, never ordered by severity; a flag over the threshold
+    const flagOf = r => r.bad && (r.l ? r.bad / r.l * 100 >= sm.pct : r.bad >= 5);
+    const rows = D.students.map(s => {
+      const mine = ev.filter(e => e.s === s.s && e.c === s.c);
+      const bad = mine.filter(e => !T_GOOD.has(e.t)).length;
+      return { ...s, mine, bad, byT: on.map(t => mine.filter(e => e.t === t).length), n: sm.notes ? (sm.notes[s.s] || 0) : null };
+    }).sort((a, b) => a.c.localeCompare(b.c, "he") || a.s.localeCompare(b.s, "he"));
+    const shown = rows.filter(r => !sm.onlyFlag || flagOf(r));
+    const pctIn = h("input.input.sm-pct", { type: "number", min: 1, max: 100, value: sm.pct, "aria-label": "אחוז סף", on: { change: e => {
+      const v = Math.round(Number(e.target.value)); if (v >= 1 && v <= 100) { sm.pct = v; try { localStorage.setItem("sumPct", v); } catch (x) { /* no storage */ } } paintSum(); } } });
+    const flagBar = h("div.sm-flagbar", null, h("span", null, "סימון דגל כשאירועים (בלי חיזוק חיובי) מגיעים ל־"), pctIn, h("span", null, "% מהשיעורים"),
+      h("button.chip", { type: "button", class: sm.onlyFlag ? "on" : "", on: { click: () => { sm.onlyFlag = !sm.onlyFlag; paintSum(); } } }, `רק מעל הסף (${rows.filter(flagOf).length})`));
+    const tbl = h("table.sm-table", null,
+      h("thead", null, h("tr", null, h("th", null, "תלמיד"), h("th", null, "כיתה"), h("th", null, "שיעורים"), on.map(t => h("th", { style: `color:${tColor(t)}` }, t)),
+        sm.notes ? h("th", null, "הערות") : null, h("th", null, "אחוז"), h("th"))),
+      h("tbody", null, shown.flatMap(r => {
+        const open = sm.open === r.s + "|" + r.c, fl = flagOf(r);
+        const tr = h("tr", { class: (fl ? "flag " : "") + (open ? "open" : ""), tabindex: r.mine.length ? 0 : null, on: r.mine.length ? { click: () => { sm.open = open ? null : r.s + "|" + r.c; paintSum(); },
+          keydown: e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); sm.open = open ? null : r.s + "|" + r.c; paintSum(); } } } : {} },
+          h("td", null, r.s), h("td", null, r.c), h("td", null, r.l || "—"), r.byT.map(n => h("td", { class: n ? "" : "zero" }, n)),
+          sm.notes ? h("td", { class: r.n ? "" : "zero" }, r.n) : null,
+          h("td", null, r.l && r.bad ? `${(r.bad / r.l * 100).toFixed(1).replace(/\.0$/, "")}%` : "—"),
+          h("td", null, fl ? h("span.sm-flag", { title: "מעל הסף שהגדרתם" }, "דגל") : null));
+        if (!open) return [tr];
+        const det = h("tr.sm-det", null, h("td", { colspan: 5 + on.length + (sm.notes ? 1 : 0) }, h("div.sm-evs", null, r.mine.slice().sort((a, b) => b.d.localeCompare(a.d) || a.h - b.h).map(e =>
+          h("div", null, h("i", { style: `background:${tColor(e.t)}` }), h("b", null, e.t), h("span", null, `${dayName(e.d)} ${dm(e.d)}${e.h ? ` · שעה ${e.h}` : ""}`),
+            h("span.muted", null, [e.m, e.u].filter(Boolean).join(" · ")), e.j ? h("span.tag", null, "מוצדק") : null)))));
+        return [tr, det];
+      })));
+    const dl = h("button.btn.dl", { type: "button", on: { click: () => csvOut(shown, on) } }, icon("download"), "אקסל");
+    const tableCard = h("section.sm-card.wide", null, h("div.sm-th", null, h("h3", null, `לפי תלמיד (${shown.length})`), dl), flagBar,
+      shown.length ? h("div.sm-scroll", null, tbl) : h("div.muted", null, "אין תלמידים לתצוגה"),
+      h("p.muted.sm-foot", null, "הרשימה לפי סדר האלף־בית, בלי דירוג. אחוז = אירועים מכלל השיעורים של התלמיד בתקופה."));
+
+    out.replaceChildren(typeChips, stats, h("div.sm-grid", null, pie, trend, heat, classCard, subjCard), tableCard);
+  }
+
+  function csvOut(rows, types) {
+    const q = v => `"${String(v).replace(/"/g, '""')}"`;
+    const lines = [["תלמיד", "כיתה", "שיעורים", ...types, "הערות מעקב"].map(q).join(",")];
+    for (const r of rows) lines.push([r.s, r.c, r.l, ...r.byT, r.n === null ? "" : r.n].map(q).join(","));
+    const a = h("a", { href: URL.createObjectURL(new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv;charset=utf-8" })), download: `ריכוז-${sm.from}-${sm.to}.csv` });
+    document.body.append(a); a.click(); a.remove(); toast("✓ הקובץ ירד");
+  }
+  $("#sumBack").onclick = () => showView("week");
+  $("#sumOpen").onclick = () => showView("sum");
 
   // ── covered lessons: everyone, summed per teacher ─────────────────────
   const fills = { from: null, to: null, group: "who", teacher: "", data: null, ready: false };
@@ -921,7 +1123,7 @@
         const nn = noteCount(s);
         const noteBtn = trk.err ? null : h("button.note-btn", {
           type: "button", class: nn ? "has" : "", disabled: !trk.data,
-          title: nn ? `הערות מעקב (${nn})` : "הערת מעקב", "aria-label": nn ? `הערות מעקב, ${nn}` : "הערת מעקב",
+          title: nn ? `הערות מעקב (${nn}) · לצפייה ולהוספת הערה` : "הוסף הערת מעקב לתלמיד", "aria-label": nn ? `הערות מעקב, ${nn}. לצפייה ולהוספת הערה` : "הוסף הערת מעקב לתלמיד",
           on: { click: () => openNotes(s) } }, icon("note"), nn ? h("span.note-n", null, nn) : null);
         row.replaceChildren(...[h("div.stu-top", null, h("span.stu-num", null, i + 1), h("span.stu-name", null, s.name), noteBtn), chips, justRow, note].filter(Boolean));
       }
