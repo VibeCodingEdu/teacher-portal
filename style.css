@@ -301,3 +301,6 @@ button.stat:active { transform: scale(.97); }
 .fills-link b { color: var(--accent); font-family: var(--display); }
 .fills-link .go { margin-inline-start: auto; color: var(--muted); }
 .fills-link:active { transform: scale(.98); }
+
+/* the office view: whose absence */
+.slip-who { font-weight: 800; color: var(--ink); font-size: 1rem; margin-bottom: 2px; }
