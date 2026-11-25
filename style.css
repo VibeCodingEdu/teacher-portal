@@ -324,3 +324,7 @@ button.stat:active { transform: scale(.97); }
 .range-title { text-align: center; color: var(--muted); font-size: .9rem; margin: 6px 0 0; }
 .date-nav .chips { flex-wrap: nowrap; gap: 6px; }
 .date-nav .chip { flex: 1 1 0; min-width: 0; padding: 9px 4px; font-size: .88rem; text-align: center; }
+
+/* ── my diary: the owner's diary, inside the page ─────────────────── */
+main.wide { max-width: 1400px; }
+.dy-frame { display: block; width: 100%; border: 0; height: calc(100dvh - 150px); min-height: 560px; background: transparent; }

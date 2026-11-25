@@ -91,6 +91,7 @@
   // ── talking to the sheet ─────────────────────────────────────────────
   let token = store.get("tp_token"), teacher = store.get("tp_teacher");
   let office = store.get("tp_office") === "1";   // the secretary's account: also sees the whole staff
+  let diaryOn = store.get("tp_diary") === "1";   // the personal diary is switched on for this teacher (in the sheet)
   let officeBt = store.get("tp_bt") || "";      // its entry card for the bot's public line (refreshed with every staff load)
   async function call(action, body = {}) {
     let data;
@@ -291,7 +292,7 @@
   function setWho() {
     put($("#who"), ...(teacher ? [h("span", null, teacher), h("button", { on: { click: logout } }, "יציאה")] : []));
   }
-  function logout() { token = teacher = null; office = false; officeBt = ""; store.del("tp_bt"); store.del("tp_token"); store.del("tp_teacher"); store.del("tp_office"); pref.del("fl"); pref.del("filt"); pref.del("sf"); setWho(); showLogin(); }
+  function logout() { token = teacher = null; office = false; officeBt = ""; diaryOn = false; store.del("tp_bt"); store.del("tp_diary"); store.del("tp_token"); store.del("tp_teacher"); store.del("tp_office"); pref.del("fl"); pref.del("filt"); pref.del("sf"); setWho(); showLogin(); }
 
   function showLogin(msg = "") {
     onHome = false;
@@ -314,6 +315,7 @@
         token = r.token; teacher = r.teacher; store.set("tp_token", token); store.set("tp_teacher", teacher);
         office = r.role === "office"; store.set("tp_office", office ? "1" : "");
         officeBt = office ? r.bt || "" : ""; store.set("tp_bt", officeBt);
+        diaryOn = !!r.diary && !office; store.set("tp_diary", diaryOn ? "1" : "");
         showHome();
       } catch (ex) {
         if (ex.code === "needCode") { codeField.classList.remove("hidden"); code.focus(); err.textContent = "לחשבון הזה יש קוד נוסף. הקלד אותו"; }
@@ -392,6 +394,7 @@
     mine = applyPending(r.items || []);
     fixes = r.fixes || [];
     office = !!r.office; store.set("tp_office", office ? "1" : "");
+    diaryOn = !!r.diary && !office; store.set("tp_diary", diaryOn ? "1" : "");
     const today = r.today || todayISO();
     const live = mine.filter(x => !isClosed(x));
     const upcoming = live.filter(x => (x.to || x.from) >= today).sort((a, b) => a.from.localeCompare(b.from) || a.fromHour - b.fromHour);
@@ -798,8 +801,9 @@
   const GROUPS = [["month", "חודש"], ["week", "שבוע"], ["day", "יום"], ["cls", "כיתה"], ["who", "במקום מי"], ["hour", "שעה"]];
 
   function tabsBar(active) {
+    $("#main").classList.toggle("wide", active === "diary");
     return h("nav.tabs", { role: "tablist" }, (office ? [["staff", "הצוות", showStaff], ["fills", "מילויי מקום", showFills]]
-      : [["abs", "ההיעדרויות שלי", showHome], ["fills", "מילויי מקום", showFills]]).map(([k, t, fn]) =>
+      : [["abs", "ההיעדרויות שלי", showHome], ["fills", "מילויי מקום", showFills], ...(diaryOn ? [["diary", "היומן שלי", showDiary]] : [])]).map(([k, t, fn]) =>
       h("button.tab", { type: "button", role: "tab", "aria-selected": active === k ? "true" : "false", class: active === k ? "on" : "",
         on: { click: () => { if (active !== k) fn(); } } }, t)));
   }
@@ -1175,6 +1179,19 @@
       ["ביטול", null, ""]]);
   }
 
+  // ── my diary: the SAME screens and code as יומן מורה (built by tools/build_teacher_diary.py in the bot's folder),
+  //    shown inside this page. It speaks to the bot's /diary line with the teacher's own סמארט סקול login. ──────
+  function showDiary() {
+    onHome = false; onStaff = false;
+    setWho();
+    $("#main").classList.add("wide");
+    const dev = new URLSearchParams(location.search);            // local testing: a card and a bot address given in the address
+    const src = "diary/index.html" + (dev.get("dt") ? "?" + new URLSearchParams({ bot: dev.get("bot") || "", dt: dev.get("dt") }) : "");
+    put($("#main"), tabsBar("diary"),
+      DEMO && !dev.get("dt") ? h("div.empty", null, "היומן האישי לא זמין במצב הדגמה.")
+        : h("iframe.dy-frame", { src, title: "היומן שלי", loading: "eager" }));
+  }
+
   // ── demo data (?demo=1) ──────────────────────────────────────────────
   const T = todayISO();
   const demoItems = [
@@ -1191,7 +1208,7 @@
     if (action === "login") {
       if (/אבי/.test(body.name || "") && !body.code) return { ok: false, error: "needCode", message: "נדרש קוד" };
       demoOffice = /אבי/.test(body.name || "");
-      return { ok: true, token: "demo", teacher: demoOffice ? "אבי צורי" : "ישראל ישראלי", role: demoOffice ? "office" : "" };
+      return { ok: true, token: "demo", teacher: demoOffice ? "אבי צורי" : "ישראל ישראלי", role: demoOffice ? "office" : "", diary: !demoOffice };
     }
     if (action === "staff") return { ok: true, today: T, yearStart: addDays(T, -80), synced: "15/11/2026 19:40",
       teachers: [{ name: "ישראלי ישראל", display: "ישראל ישראלי" }, { name: "כהן לוי", display: "לוי כהן" }, { name: "ברק דוד", display: "דוד ברק" }],
@@ -1207,7 +1224,7 @@
       if (q.op === "unassign") delete demoSub[q.hour];
       return { ok: true, status: "done", result: { ok: true, hours: [2, 3, 4].map(n => ({ hour: n, lesson: "ד1 חומש", sub: demoSub[n] || "", t: T2 })) } };
     }
-    if (action === "mine") return { ok: true, office: demoOffice, teacher: demoOffice ? "אבי צורי" : "ישראל ישראלי", items: demoItems, synced: "15/11/2026 19:40", today: T,
+    if (action === "mine") return { ok: true, office: demoOffice, diary: !demoOffice, teacher: demoOffice ? "אבי צורי" : "ישראל ישראלי", items: demoItems, synced: "15/11/2026 19:40", today: T,
       fixes: [{ at: "10/11/2026 08:12", date: addDays(T, -45), text: "הייתי רק עד שעה 6", status: "טופל", answer: "תוקן, השעות עודכנו" },
               { at: "15/11/2026 18:30", date: nextSchoolDay(addDays(T, 3)), text: "לא נעדרתי בשעה 6", status: "נשלח למנדי", answer: "" }] };
     if (action === "myFills") return { ok: true, today: T, synced: "15/11/2026 19:40", rows: [
