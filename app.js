@@ -91,6 +91,7 @@
   // ── talking to the sheet ─────────────────────────────────────────────
   let token = store.get("tp_token"), teacher = store.get("tp_teacher");
   let office = store.get("tp_office") === "1";   // the secretary's account: also sees the whole staff
+  let officeBt = store.get("tp_bt") || "";      // its entry card for the bot's public line (refreshed with every staff load)
   async function call(action, body = {}) {
     let data;
     if (DEMO) data = await demo(action, body);
@@ -227,7 +228,7 @@
   function setWho() {
     put($("#who"), ...(teacher ? [h("span", null, teacher), h("button", { on: { click: logout } }, "יציאה")] : []));
   }
-  function logout() { token = teacher = null; office = false; store.del("tp_token"); store.del("tp_teacher"); store.del("tp_office"); pref.del("fl"); pref.del("filt"); pref.del("sf"); setWho(); showLogin(); }
+  function logout() { token = teacher = null; office = false; officeBt = ""; store.del("tp_bt"); store.del("tp_token"); store.del("tp_teacher"); store.del("tp_office"); pref.del("fl"); pref.del("filt"); pref.del("sf"); setWho(); showLogin(); }
 
   function showLogin(msg = "") {
     onHome = false;
@@ -249,6 +250,7 @@
         const r = await call("login", { name: name.value, id: id.value, code: code.value });
         token = r.token; teacher = r.teacher; store.set("tp_token", token); store.set("tp_teacher", teacher);
         office = r.role === "office"; store.set("tp_office", office ? "1" : "");
+        officeBt = office ? r.bt || "" : ""; store.set("tp_bt", officeBt);
         showHome();
       } catch (ex) {
         if (ex.code === "needCode") { codeField.classList.remove("hidden"); code.focus(); err.textContent = "לחשבון הזה יש קוד נוסף. הקלד אותו"; }
@@ -849,6 +851,7 @@
     let r;
     try { r = await call("staff"); } catch (ex) { put(body, h("div.empty", null, ex.message)); return; }
     staff = r;
+    if (r.bt) { officeBt = r.bt; store.set("tp_bt", officeBt); }
     const today = r.today || todayISO();
     const reasons = [...new Set(r.items.map(x => x.reason).filter(Boolean))];
     const bar = h("div.filters"), list = h("div.slips"), sum = h("div.stats");
@@ -937,6 +940,23 @@
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   /** The page cannot reach שוטף. The request goes through the sheet to the bot, which answers within seconds. */
   async function assignReq(op, p) {
+    // First the direct line to the bot (fast). If it is unreachable or the card is not accepted,
+    // the same request goes the long way, through the sheet.
+    if (CFG.botUrl && officeBt && !DEMO) {
+      try {
+        const ctl = new AbortController(), t = setTimeout(() => ctl.abort(), 45000);
+        const res = await fetch(CFG.botUrl + "/office", { method: "POST", body: JSON.stringify({ bt: officeBt, op, ...p }), signal: ctl.signal });
+        clearTimeout(t);
+        if (res.ok) {
+          const q = await res.json();
+          if (!q.ok) throw Object.assign(new Error(q.error || "הפעולה נכשלה"), { final: true });
+          return q;
+        }
+      } catch (ex) { if (ex.final) throw ex; /* no answer: take the long way */ }
+    }
+    return assignViaSheet(op, p);
+  }
+  async function assignViaSheet(op, p) {
     const r = await call("oAssign", { op, ...p });
     const t0 = Date.now(); let fails = 0;
     for (;;) {
