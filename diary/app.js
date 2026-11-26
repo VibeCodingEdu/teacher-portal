@@ -156,13 +156,30 @@
     }
     return q;
   }
+  /** Sends one file to a note: the raw bytes in the body, the card and the rest in headers (the bot checks the card first). */
+  async function apiUpload(url, noteId, file, again = true) {
+    const base = DY.q.get("bot") || dyCfg().botUrl;
+    if (!base) throw new Error("היומן עוד לא מחובר");
+    if (!DY.dt) await dyCard();
+    let res;
+    try {
+      res = await fetch(base + (DY.q.get("bot") ? "/diary/file" : "/diaryfile"), { method: "POST", body: file, headers: { "Content-Type": "application/octet-stream", "X-Dt": DY.dt,
+        "X-Url": encodeURIComponent(url), "X-Note": noteId, "X-Name": encodeURIComponent(file.name) } });
+    } catch (e) { throw new Error("היומן לא זמין כרגע. אפשר להשתמש באתר של סמארט סקול"); }
+    if (res.status === 401 && again) { DY.dt = ""; return apiUpload(url, noteId, file, false); }
+    const q = await res.json().catch(() => ({}));
+    if (!q.ok) { const e = new Error(q.error || `שגיאה (${res.status})`); if (q.notConnected) showConnect(); throw e; }
+    return q;
+  }
   async function api(path, opts = {}) {
     const u = new URL(path, location.href), q = u.searchParams, post = (opts.method || "GET") !== "GET";
     if (u.pathname === "/api/auth") return { ok: true };
     if (u.pathname === "/api/week") return dyCall("week", { date: q.get("date") });
     if (u.pathname === "/api/lesson") return post ? dyCall("save", { url: opts.body.url, draft: opts.body.draft }) : dyCall("lesson", { url: q.get("url") });
+    if (u.pathname === "/api/notes/files") return dyCall("noteFiles", { url: q.get("url"), id: q.get("id") });
     if (u.pathname === "/api/notes") {
       if (!post) return dyCall("notes", { url: q.get("url") });
+      if (opts.body.op === "fileDel") return dyCall("noteFileDel", { url: opts.body.url, id: opts.body.id, box: opts.body.box, fname: opts.body.name });
       const b = opts.body, op = { add: "noteAdd", set: "noteSet", delete: "noteDelete" }[b.op];
       return dyCall(op, { url: b.url, pupil: b.pupil, draft: b.draft, id: b.id, changes: b.changes });
     }
@@ -1114,6 +1131,54 @@
 
       const list2 = h("div.nt-list");
       const pOf = () => pupilOf(s) || { notes: [], publishable: false };
+      const MAX_FILE = 5 * 1024 * 1024, fopen = new Set(), fdata = new Map();
+      const OK_EXT = new Set("pdf doc docx xls xlsx ppt pptx odt ods txt rtf csv jpg jpeg png gif heic webp".split(" "));
+      const sizeOk = f => { if (!OK_EXT.has((f.name.split(".").pop() || "").toLowerCase())) { toast("סוג הקובץ לא נתמך. אפשר pdf, מסמכי אופיס, תמונות וטקסט", true); return false; } if (f.size > MAX_FILE) { toast("הקובץ גדול מדי. עד 5MB", true); return false; } if (!f.size) { toast("הקובץ ריק", true); return false; } return true; };
+      // the files of one note: a small panel under the card (read when opened)
+      function filesPanel(n) {
+        const st = fdata.get(n.id) || (fdata.set(n.id, { files: null, busy: "", err: "" }).get(n.id));
+        const box2 = h("div.nt-files");
+        const pick = h("input", { type: "file", hidden: true, accept: ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.rtf,.csv,.jpg,.jpeg,.png,.gif,.heic,.webp" });
+        function draw() {
+          const rows = (st.files || []).map(f => h("div.nt-file", null,
+            f.view ? h("a", { href: f.view, target: "_blank", rel: "noopener noreferrer" }, f.name || "קובץ") : h("span", null, f.name || "קובץ"),
+            h("span.muted", null, [f.by, f.date].filter(Boolean).join(" · ")),
+            f.download ? h("a.nt-dl", { href: f.download, target: "_blank", rel: "noopener noreferrer", title: "הורדה" }, icon("download")) : null,
+            h("button.btn.small.danger", { type: "button", disabled: !!st.busy, on: { click: () => del(f) } }, "מחיקה")));
+          put(box2,
+            st.files === null && !st.err ? h("div.muted", null, "טוען קבצים…") : null,
+            st.err ? h("div.nt-ferr", null, st.err) : null,
+            st.files && !st.files.length ? h("div.muted", null, "אין קבצים מצורפים") : null, rows,
+            h("div.nt-fadd", null,
+              h("button.btn.small", { type: "button", disabled: !!st.busy, on: { click: () => pick.click() } }, st.busy || "צירוף קובץ"), pick,
+              h("span.muted", null, "עד 5MB. pdf, אופיס, תמונות")));
+        }
+        // every change repaints the whole list (the panels are rebuilt from `st`), so `busy` is cleared first
+        function sync() { st.busy = ""; n.files = st.files ? st.files.length : n.files; repaintAll(); }
+        async function load() {
+          st.err = ""; draw();
+          try { st.files = (await api(`/api/notes/files?url=${encodeURIComponent(url)}&id=${n.id}`)).files; }
+          catch (e) { st.err = e.message; st.files = st.files || []; }
+          draw();
+        }
+        async function del(f) {
+          if (!confirm(`למחוק את הקובץ "${f.name}"? אי אפשר לשחזר.`)) return;
+          st.busy = "מוחק…"; draw();
+          try { st.files = (await noteCall({ op: "fileDel", id: n.id, box: f.box, name: f.name })).files; st.err = ""; toast("✓ הקובץ נמחק"); }
+          catch (e) { st.err = e.message; }
+          sync();
+        }
+        pick.addEventListener("change", async () => {
+          const f = pick.files[0]; pick.value = "";
+          if (!f || !sizeOk(f)) return;
+          st.busy = "מעלה…"; draw();
+          try { st.files = (await apiUpload(url, n.id, f)).files; st.err = ""; toast("✓ הקובץ צורף"); }
+          catch (e) { st.err = e.message; }
+          sync();
+        });
+        draw(); if (st.files === null) load();
+        return box2;
+      }
       function noteCard(n) {
         const pr = (O.priorities.find(p => String(p.id) === String(n.priority)) || {}).label || "";
         const acts = h("div.nt-acts");
@@ -1135,8 +1200,11 @@
             n.treatment ? h("span.nt-tag", null, n.treatment) : null,
             n.public ? h("span.nt-tag.hi", null, "חשוף להורים") : null,
             n.private ? h("span.nt-tag", null, "פרטית") : null,
-            n.files ? h("span.nt-tag", null, `${n.files} קבצים`) : null),
+            n.files ? h("span.nt-tag", null, `${n.files} ${n.files === 1 ? "קובץ" : "קבצים"}`) : null),
           h("div.nt-sub", null, [n.teacher, n.updated].filter(Boolean).join(" · ")),
+          n.pending ? null : h("button.btn.small.nt-fbtn", { type: "button", "aria-expanded": fopen.has(n.id) ? "true" : "false", on: { click: () => {
+            fopen.has(n.id) ? fopen.delete(n.id) : fopen.add(n.id); paintNotes(); } } }, icon("download"), n.files ? `קבצים (${n.files})` : "קבצים"),
+          !n.pending && fopen.has(n.id) ? filesPanel(n) : null,
           acts.children.length ? acts : null);
       }
       function paintNotes() {
@@ -1151,6 +1219,15 @@
       const prio = h("select", null, O.priorities.map(p => h("option", { value: p.id }, p.label)));
       const day = h("input", { type: "date", value: todayISO() });
       const priv = h("input", { type: "checkbox" }), pub = h("input", { type: "checkbox" });
+      let newFile = null;
+      const filePick = h("input", { type: "file", hidden: true, accept: ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.rtf,.csv,.jpg,.jpeg,.png,.gif,.heic,.webp" });
+      const fileName = h("span.muted", null, "");
+      const fileBtn = h("button.btn.small", { type: "button", on: { click: () => filePick.click() } }, icon("download"), "צירוף קובץ");
+      filePick.addEventListener("change", () => {
+        const f = filePick.files[0]; filePick.value = "";
+        if (!f || !sizeOk(f)) return;
+        newFile = f; fileName.textContent = f.name;
+      });
       const share = [];
       const shareChips = h("div.chips");
       const shareSel = h("select", null, h("option", { value: "" }, "שיתוף עם מורה…"), O.teachers.map(t => h("option", { value: t.id }, t.name)));
@@ -1169,7 +1246,15 @@
         const tr = O.treatments.find(x => x.id === treat.value);
         noteChange(() => { pOf().notes.push({ id: "tmp" + Date.now(), text: t, teacher: "", updated: "נשמרת…", treatment: tr ? tr.label : "",
           priority: draft.priority, taken: false, files: 0, private: draft.private, public: draft.public, pending: true }); },
-          () => noteCall({ op: "add", pupil: s.sid, draft }), "✓ ההערה נשמרה בסמארט סקול");
+          async () => {
+            const att = newFile;
+            let r = await noteCall({ op: "add", pupil: s.sid, draft });
+            if (att && r.newId) {
+              try { await apiUpload(url, r.newId, att); r = await api(`/api/notes?url=${encodeURIComponent(url)}`); }
+              catch (e) { toast("ההערה נשמרה, אבל הקובץ לא צורף: " + e.message, true); }
+            }
+            return r;
+          }, "✓ ההערה נשמרה בסמארט סקול");
         toast("ההערה נשמרת…");
         close();
       } } }, "שמירת הערה");
@@ -1186,6 +1271,7 @@
               h("div.field", null, h("label", null, "עדיפות"), prio),
               h("div.field", null, h("label", null, "תאריך יעד"), day)),
             h("div.field", null, shareSel, shareChips),
+            h("div.nt-fadd", null, fileBtn, filePick, fileName),
             h("div.nt-checks", null,
               h("label.check", null, priv, " הערה פרטית"),
               pOf().publishable ? h("label.check", null, pub, " חשיפה להורים ולתלמיד") : null),

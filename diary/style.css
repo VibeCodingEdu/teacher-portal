@@ -1116,3 +1116,19 @@ td .note-badge { margin-inline-start: 6px; font-size: .68rem; }
 #sumOut.smx-busy { opacity: .45; pointer-events: none; }
 .smx-scope { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin: 0 0 12px; padding: 10px 14px; border-radius: 12px; background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--line)); }
 .smx-scope b { font-size: 15px; } .smx-scope span { color: var(--ink-2); font-size: 13.5px; }
+
+/* ── הערות מעקב: קבצים ─────────────────────────────────────────── */
+.nt-fbtn { margin-top: 8px; display: inline-flex; align-items: center; gap: 6px; }
+.nt-fbtn svg { width: 15px; height: 15px; }
+.nt-files { margin-top: 8px; padding: 10px 12px; border-radius: 10px; background: color-mix(in srgb, var(--ink) 4%, transparent); display: grid; gap: 8px; }
+.nt-file { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 14px; }
+.nt-file > a:first-child { font-weight: 600; color: var(--accent); overflow-wrap: anywhere; }
+.nt-file .muted { font-size: 12.5px; }
+.nt-file .btn { margin-inline-start: auto; }
+.nt-dl { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px; color: var(--ink-2); }
+.nt-dl:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+.nt-dl svg { width: 16px; height: 16px; }
+.nt-fadd { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 4px 0 8px; }
+.nt-fadd .btn { display: inline-flex; align-items: center; gap: 6px; }
+.nt-fadd .btn svg { width: 15px; height: 15px; }
+.nt-ferr { color: var(--danger); font-size: 13.5px; }
