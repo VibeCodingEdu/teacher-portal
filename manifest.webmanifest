@@ -1,6 +1,6 @@
 {
-  "name": "דיווח היעדרות",
-  "short_name": "היעדרות",
+  "name": "מעקבית",
+  "short_name": "מעקבית",
   "lang": "he",
   "dir": "rtl",
   "start_url": "./",
